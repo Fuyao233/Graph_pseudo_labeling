@@ -20,7 +20,8 @@
 
 #if conda
 conda install pytorch==2.0.0 torchvision==0.15.0 torchaudio==2.0.0 pytorch-cuda=11.7 -c pytorch -c nvidia
-conda install pyg -c pyg
+conda install pyg pytorch-scatter pytorch-sparse pytorch-cluster pytorch-spline-conv -c pyg
+
 conda install scipy flake8 Babel flask
 conda install -c conda-forge ogb
 conda install -c conda-forge gdown
