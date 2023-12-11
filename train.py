@@ -130,7 +130,7 @@ class Trainer:
             optimizer.zero_grad()
             
             out, autoencoder_loss = model(graph, auto_encoder_loss_flag=True)    
-            groundtruth_loss = criterion(out[graph.train_index], graph.y[graph.train_index])
+            groundtruth_loss = criterion(out[graph.train_index], graph.y[graph.train_index].to(torch.int64))
             loss = groundtruth_loss + self.autoencoder_weight * autoencoder_loss
             acc = torch.argmax(out[graph.training_labels>=0],dim=1)==graph.y[graph.train_index]
             acc = torch.sum(acc) / torch.sum(graph.train_index)
@@ -140,7 +140,7 @@ class Trainer:
             
             if self.method == 'flexmatch' and torch.sum(graph.pseudolabel>=0) > 0: 
                 pseudolabel_index = graph.pseudolabel >= 0
-                pseudolabel_loss = criterion(out[pseudolabel_index], graph.pseudolabel[pseudolabel_index])
+                pseudolabel_loss = criterion(out[pseudolabel_index], graph.pseudolabel[pseudolabel_index].to(torch.int64))
                 pseudo_loss_list.append(pseudolabel_loss.item())
                 loss = loss + self.flexmatch_weight*pseudolabel_loss
                 
@@ -222,13 +222,20 @@ if __name__ == "__main__":
     graph = prepocessing(dataset)
     
     model = ourModel(input_dim=graph.num_features, output_dim=graph.num_class, hidden_dim=args.hidden_dim, num_layers=args.num_layers,dropout=args.dropout)
-    
-    trainer = Trainer(graph, model, device_num=args.gpu, lr=args.lr, 
-                      weight_decay=args.weight_decay, 
+
+    trainer = Trainer(graph, model, device_num=0, lr=args.lr,
+                      weight_decay=args.weight_decay,
                       fixed_threshold=args.fixed_threshold,
                       flex_batch=args.flex_batch,
                       flexmatch_weight=args.flexmatch_weight,
                       autoencoder_weight=args.autoencoder_weight)
     acc = trainer.train()
-    
+    # trainer = Trainer(graph, model, device_num=args.gpu, lr=args.lr,
+    #                   weight_decay=args.weight_decay,
+    #                   fixed_threshold=args.fixed_threshold,
+    #                   flex_batch=args.flex_batch,
+    #                   flexmatch_weight=args.flexmatch_weight,
+    #                   autoencoder_weight=args.autoencoder_weight)
+    # acc = trainer.train()
+
     
