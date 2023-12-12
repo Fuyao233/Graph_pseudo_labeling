@@ -1,0 +1,13 @@
+autoencoder_weight: 0.01
+dataset: twitch-e
+dropout: 0.3
+fixed_threshold: 0.85
+flex_batch: 64
+flexmatch_weight: 0.8
+gpu: 4
+hidden_dim: 8
+lr: 0.01
+num_layers: 3
+test_ratio: 0.1
+train_ratio: 0.8
+val_ratio: 0.1

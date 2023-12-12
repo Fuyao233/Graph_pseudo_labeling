@@ -1,22 +1,120 @@
 import torch
 from torch_geometric.data import Data
-from utils import load_dataset, split_dataset, prepocessing
-from model import GCN
-datanames = ['twitch-e', 'fb100', 'ogbn-proteins', 'deezer-europe', 'arxiv-year', 'pokec', 'snap-patents',
-             'yelp-chi', 'ogbn-arxiv', 'ogbn-products', 'Cora', 'CiteSeer', 'PubMed', 'chameleon', 'cornell',
-             'film', 'squirrel', 'texas', 'wisconsin', 'genius', 'twitch-gamer', 'wiki']
-# datanames = ['fb100']
+from utils import load_dataset, split_dataset, prepocessing, EarlyStopper, find_edges, remove_edges
+from model import GCN, ourModel
+from tqdm import tqdm
+from torch.optim import Adam
+import torch.nn.functional as F
+from selecting_algorithm import Flexmatch
+import os 
+import pandas as pd 
+import argparse
+from copy import deepcopy
+import numpy as np
+import torch.nn as nn
 
-# for data in datanames:
-#     dataset = load_dataset(data)
-#     print(data, len(dataset))
-data = 'yelp-chi'
-dataset = load_dataset(data)
-split_dataset(dataset, 0.2, 0.8)
+utils_data_pt = './utils_data/MLP'
 
-graph = prepocessing(dataset)
+class MLP(nn.Module):
+    def __init__(self, in_channel, out_channel, hidden_channel) -> None:
+        super(MLP, self).__init__()
+        
+        self.model = nn.Sequential(
+            nn.Linear(in_channel, hidden_channel),
+            nn.ReLU(),
+            nn.Linear(hidden_channel, out_channel)
+        )
+    
+    def forward(self, x):
+        return self.model(x)
 
-model = GCN(input_dim=dataset[0][0]['node_feat'].size()[1], hidden_dim=32, output_dim=graph.num_class,num_layers=3,dropout=0.7)
-output = model(graph)
-print(output)
 
+def test(model, criterion, data, labels):
+    model.eval()
+    loss = None
+    acc = None
+    with torch.no_grad():
+        
+        logits = model(data)
+        loss = criterion(logits, labels)
+        
+        predict_y = torch.argmax(logits, dim=1)
+        acc = torch.mean((predict_y==labels)*1.)
+    return loss, acc
+        
+        
+def train(model, graph, device):
+    
+    torch.cuda.set_device(device)
+    device = torch.cuda.current_device()
+    
+    model.to(device)
+    graph.to(device)
+    
+    train_index = graph['train_index']
+    val_index = graph['val_index']
+    test_index = graph['test_index']
+    epoch = 200
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    earlystopper = EarlyStopper()
+    for e in range(epoch):
+        optimizer.zero_grad()
+        logits = model(graph.x[train_index])
+        loss = criterion(logits, graph.y[train_index])
+        loss.backward()
+        optimizer.step()
+        
+        predict_y = torch.argmax(logits, dim=1)
+        acc = torch.mean((predict_y==graph.y[train_index])*1.)
+        
+        print(f'train accuracy:{acc}')
+        val_loss, val_acc = test(model, criterion, graph.x[val_index], graph.y[val_index])
+        print(f'val accuracy:{val_acc}')
+        
+        if earlystopper.early_stop(e, val_loss):
+            break
+        
+
+
+    test_loss, test_acc = test(model, criterion, graph.x[test_index], graph.y[test_index])
+    print(f'test accurracy{test_acc}')
+    
+    
+    
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset', type=str, default='twitch-e')
+    parser.add_argument('--gpu', type=int, default=4)
+    
+    # hyper-parameter
+    # for autoencoder
+    parser.add_argument('--autoencoder_weight', type=float, default=0.01)
+    # for flexmatch
+    parser.add_argument('--flex_batch', type=float, default=64)
+    parser.add_argument('--flexmatch_weight', type=float, default=0.8)
+    parser.add_argument('--fixed_threshold', type=float, default=0.99)
+    # for dataset 
+    parser.add_argument('--train_ratio', type=float, default=0.8)
+    parser.add_argument('--test_ratio', type=float, default=0.1)
+    parser.add_argument('--val_ratio', type=float, default=0.1)
+    # for model
+    parser.add_argument('--hidden_dim', type=int, default=64)
+    parser.add_argument('--num_layers', type=int, default=3)
+    parser.add_argument('--dropout', type=float, default=0.3)
+    # for optimizer
+    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--weight_decay', type=float, default=0.0005)
+    
+    
+    args = parser.parse_args()
+    dataset = load_dataset(args.dataset)
+    
+    split_dataset(dataset, args.train_ratio, args.test_ratio, args.val_ratio)
+    graph = prepocessing(dataset)
+    model = MLP(graph.x.size()[1], 2, 64)
+    train(model, graph,1)
+    
+    

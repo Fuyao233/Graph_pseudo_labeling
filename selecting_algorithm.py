@@ -35,24 +35,39 @@ class Flexmatch:
         return res==1 # 'True' means selected sample 
     
     def select(self):
-        warm_up_flags = self.is_warm_up()
-        tau_c = torch.zeros(self.graph.num_class)
-        for i in range(len(tau_c)):
-            sigma_c = self.get_sigma_c()
-            beta_c = None
-            if warm_up_flags[i]:
-                # warm up
-                beta_c = sigma_c/(max(sigma_c.max(), self.graph.num_nodes-torch.sum(sigma_c)))
-            else:
-                beta_c = sigma_c/sigma_c.max()
-            tau_c[i] = (beta_c*self.tau)[i]
-        
+        # naive, fixed threshold
         confidence, y_hat = self.prediction.max(dim=1)
-        
-        unlabeled_index_batch = self.get_batch()
-        # unlabeled_index = self.graph.pseudolabel == -1
+        unlabeled_index = self.graph.pseudolabel == -1
         for c in range(self.graph.num_class):
-            self.graph.pseudolabel[unlabeled_index_batch*(y_hat==c)*(confidence>tau_c[c])] = c 
+            initial_indices = torch.where(unlabeled_index*(y_hat==c)*(confidence>self.tau))[0]
+            selected_indices = None 
+            if len(initial_indices) > self.batch_size:
+                selected_indices = initial_indices[torch.argsort(confidence[initial_indices], descending=True)][:self.batch_size]
+            else:
+                selected_indices = initial_indices
+            self.graph.pseudolabel[selected_indices] = c
+        confidence
+        y_hat
+        
+        # old method
+        # warm_up_flags = self.is_warm_up()
+        # tau_c = torch.zeros(self.graph.num_class)
+        # for i in range(len(tau_c)):
+        #     sigma_c = self.get_sigma_c()
+        #     beta_c = None
+        #     if warm_up_flags[i]:
+        #         # warm up
+        #         beta_c = sigma_c/(max(sigma_c.max(), self.graph.num_nodes-torch.sum(sigma_c)))
+        #     else:
+        #         beta_c = sigma_c/sigma_c.max()
+        #     tau_c[i] = (beta_c*self.tau)[i]
+        
+        # confidence, y_hat = self.prediction.max(dim=1)
+        
+        # unlabeled_index_batch = self.get_batch()
+        # # unlabeled_index = self.graph.pseudolabel == -1
+        # for c in range(self.graph.num_class):
+        #     self.graph.pseudolabel[unlabeled_index_batch*(y_hat==c)*(confidence>tau_c[c])] = c 
             # print(f'class {c} add {torch.sum(unlabeled_index*(y_hat==c)*(confidence>tau_c[c]))} samples')
         
 
