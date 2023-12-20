@@ -37,17 +37,23 @@ class Flexmatch:
     def select(self):
         # naive, fixed threshold
         confidence, y_hat = self.prediction.max(dim=1)
-        unlabeled_index = self.graph.pseudolabel == -1
+        unlabeled_index = self.graph.pseudolabel == -1 # potentially add validation nodes
+        
+        indices = torch.zeros_like(self.graph.y)==1
+        
         for c in range(self.graph.num_class):
-            initial_indices = torch.where(unlabeled_index*(y_hat==c)*(confidence>self.tau))[0]
-            selected_indices = None 
-            if len(initial_indices) > self.batch_size:
-                selected_indices = initial_indices[torch.argsort(confidence[initial_indices], descending=True)][:self.batch_size]
-            else:
-                selected_indices = initial_indices
+            selected_indices = torch.where(unlabeled_index*(y_hat==c)*(confidence>self.tau))[0]
+            # selected_indices = initial_indices
             self.graph.pseudolabel[selected_indices] = c
-        confidence
-        y_hat
+            
+            indices[selected_indices] = True
+        
+        pseudo_label_acc = torch.mean((y_hat[indices] == self.graph.y[indices])*1.)
+        if torch.sum(indices)==0:
+            print(r'\nAdd no pseudo labels.')
+        else:
+            print(f'\nNumber of new labels: {torch.sum(indices)}; Accuracy of pseudo labels when selecting: {pseudo_label_acc.item()}')
+        
         
         # old method
         # warm_up_flags = self.is_warm_up()

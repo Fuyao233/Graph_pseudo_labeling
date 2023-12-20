@@ -1,9 +1,9 @@
 import torch
 from torch_geometric.data import Data
-from utils import load_dataset, split_dataset, prepocessing, EarlyStopper, find_edges, remove_edges
-from model import GCN, ourModel
+from utils import *
+from model import GCN, ourModel, MLP
 from tqdm import tqdm
-from torch.optim import Adam
+from torch.optim import Adam, SGD, AdamW
 import torch.nn.functional as F
 from selecting_algorithm import Flexmatch
 import os 
@@ -13,18 +13,30 @@ from copy import deepcopy
 import numpy as np
 import torch.nn as nn
 import yaml
+from copy import deepcopy
 
+import random
 
 class Trainer:
-    def __init__(self, graph, model, device_num, lr, 
+    def __init__(self, graph, model, device_num, model_name,
+                 lr, momentum, weight_decay,
                  fixed_threshold,  
                  flexmatch_weight,
                  flex_batch,
                  autoencoder_weight,
-                 select_method='flexmatch',) :
+                 metric,
+                 args,
+                 select_method='flexmatch') :
         self.graph = graph 
         self.model = model 
+        self.model_name = model_name
+        self.args = args 
+        
         self.lr = lr
+        self.momentum = momentum 
+        self.weight_decay = weight_decay 
+        
+        self.metric = metric
         # self.weight_decay = weight_decay
         self.fixed_threshold = fixed_threshold
         self.method = 'flexmatch'
@@ -44,33 +56,22 @@ class Trainer:
         if 'val_index' in graph:
             self.graph.pseudolabel[graph['val_index']] = -1 # validation data is treated equally as unlabeled data
 
+        # record the best model during the whole training process 
+        self.best_model = None # best model among all best_model_iter
+        self.best_graph = None # graph according to the best model(some edges may be omitted)
+        self.best_val_metric = -torch.inf
+        self.best_training_num_record = 0 # record the num of training samples of the best model
+        self.global_iteration = 0 # number of adding samples 
+        
         # self.update_autoencoder_prob()
         # print(self.graph.autoencoder_prob)
         self.update_training_labels()
         self.update_training_graph()
         
-        self.stopper = EarlyStopper(patience=30)
+        self.stopper = EarlyStopper(patience=300, max_iter=300)
     
-    # def get_batch_indices(self):
-    #     true_indices = torch.where(self.graph.['train_index'])[0]
-    
-    # def update_autoencoder_prob(self):
-    #     self.graph.autoencoder_prob = torch.zeros((self.graph.num_nodes,self.graph.num_class))
-    #     # dynamically calculate the portion of each class (taking pseudo-labels into account) 
-    #     # batch_indices = self.graph['train_index'] * 
-    #     class_portion = torch.tensor([((torch.sum(self.graph.y[self.graph['train_index']]==c))+torch.sum(self.graph.pseudolabel==c))/((torch.sum(self.graph['train_index'])) + torch.sum(self.graph.pseudolabel>=0) ) for c in range(self.graph.num_class)])
-    #     print(class_portion)
-    #     for i,_ in enumerate(self.graph.autoencoder_prob):
-    #         if self.graph.pseudolabel[i] == -2:
-    #             self.graph.autoencoder_prob[i][self.graph.y[i]] = 1.
-    #         elif  self.graph.pseudolabel[i] == -1:
-    #             self.graph.autoencoder_prob[i] = class_portion
-    #         elif self.graph.pseudolabel[i] >= 0:
-    #             self.graph.autoencoder_prob[i][self.graph.pseudolabel[i]] = 1.
-    #         else:
-    #             raise ValueError("What's up??")
-    
-    def eval(self ,keyword='test'):
+    def eval(self, model, graph, keyword='test', metric='auc'):
+        model.eval()
         key = None
         if keyword == 'test':
             key = 'test_index'
@@ -78,22 +79,24 @@ class Trainer:
             key = 'val_index'
         else:
             raise ValueError('Wrong keyword!')
-            
-        with torch.no_grad():
-            y_hat = torch.argmax(self.model(self.graph), dim=1)
-            # print(y_hat.size())
-            # print(y_hat['test_index'].size())
-            # print(self.graph.y['test_index'].size())
-            acc1 = torch.mean((y_hat[self.graph[key]]==self.graph.y[self.graph[key]]).float())
-            acc2 = torch.mean((y_hat==self.graph.y).float())
-            # acc2 = torch.mean((self.graph.pseudolabel[self.graph['test_index']]==self.graph.y[self.graph['test_index']]).float())
-            
-            # print(f'Reforward accuracy is {acc1:.3f} \n Pseudolabel accuracy is {acc2:.3f}')
-            if keyword == 'test':
-                print(f'Reforward accuracy is {acc1:.3f}')
-                print(f'Total acc: {acc2:3f}')
         
-        return acc1
+        with torch.no_grad():
+            logits = model(graph)
+            y_hat = torch.argmax(logits, dim=1)
+             
+            if metric == 'accuracy':
+                metric = torch.mean((y_hat[self.graph[key]]==self.graph.y[self.graph[key]]).float())
+            elif metric == 'auc':
+                # metric = roc_auc_score(self.graph.y[self.graph[key]].cpu().numpy(),torch.softmax(logits[self.graph[key]], dim=1)[:,1].cpu().detach().numpy()) 
+                metric = eval_rocauc(graph.y[graph[key]].reshape((-1,1)), logits[graph[key]])
+            else:
+                assert metric in ['accuracy', 'auc']
+            
+            # if keyword == 'test':
+            #     print(f'{key} {metric} is {metric:.3f}')
+
+        # auc_score = roc_auc_score(graph.y[graph[key]].cpu().numpy(),torch.softmax(logits[graph[key]],dim=1)[:,1].cpu().detach().numpy()) 
+        return metric
         
     def update_training_graph(self):
         """
@@ -102,9 +105,16 @@ class Trainer:
         """
         training_graph = deepcopy(self.graph)
         
-        # delete_node_indices = self.graph.training_labels==-1 
-        # delete_edge_indices = find_edges(training_graph,delete_node_indices)
-        # training_graph = remove_edges(training_graph,delete_edge_indices)
+        if self.global_iteration >= 3:
+            self.args.mask_edge_flag = False 
+        
+        if self.args.mask_edge_flag:
+            # edge mask
+            training_graph.edge_index = torch.zeros((2,0)).to(torch.cuda.current_device(), dtype=graph.edge_index.dtype)
+        
+        delete_node_indices = torch.where(self.graph.training_labels==-1)[0]
+        delete_edge_indices = find_edges(training_graph,delete_node_indices)
+        training_graph = remove_edges(training_graph,delete_edge_indices)
         
         self.training_graph = training_graph
         
@@ -114,107 +124,182 @@ class Trainer:
         if self.method == 'flexmatch':
             Flexmatch(self.graph, prediction, self.fixed_threshold, self.flex_batch).select()
         
+        self.update_training_labels()
         self.update_training_graph()
+        
+        self.global_iteration = self.global_iteration+1
         
     def update_training_labels(self):
         self.graph.training_labels = self.graph.pseudolabel.clone()
         self.graph.training_labels[self.graph['train_index']] = self.graph.y[self.graph['train_index']]
+    
+    def cal_loss(self, model_name, model, graph, criterion, record):
+        loss = None 
+        out = None 
+        if model_name == 'ourModel':
+            if self.args.mask_edge_flag:
+                out = model(graph)
+            else:
+                out, autoencoder_loss = model(graph, auto_encoder_loss_flag=True)    
+                
+            groundtruth_loss = criterion(out[graph.train_index], graph.y[graph.train_index])
+            loss = groundtruth_loss + self.autoencoder_weight * autoencoder_loss if not self.args.mask_edge_flag else groundtruth_loss
+            
+            if self.method == 'flexmatch' and torch.sum(graph.pseudolabel>=0) > 0: 
+                pseudolabel_index = graph.pseudolabel >= 0
+                pseudolabel_loss = criterion(out[pseudolabel_index], graph.pseudolabel[pseudolabel_index])
+                record[1].append(pseudolabel_loss.item())
+                loss = loss + self.flexmatch_weight*pseudolabel_loss            
+            
+            record[0].append([groundtruth_loss.item(), autoencoder_loss.item() if not self.args.mask_edge_flag else 0]) 
+
+        elif model_name == 'mlp':
+            out = model(graph)
+            loss = criterion(out[graph.train_index], graph.y[graph.train_index])
+            
+            if self.method == 'flexmatch' and torch.sum(graph.pseudolabel>=0) > 0: 
+                pseudolabel_index = graph.pseudolabel >= 0
+                pseudolabel_loss = criterion(out[pseudolabel_index], graph.pseudolabel[pseudolabel_index])
+                record[1].append(pseudolabel_loss.item())
+                loss = loss + self.flexmatch_weight*pseudolabel_loss     
         
+        else:
+            assert False
+        
+        return out, loss
+            
     def train(self):
-        model = self.model 
-        graph = self.training_graph 
-        optimizer = Adam(model.parameters(), lr=self.lr)
+        model_iter = self.model 
+        graph_iter = self.training_graph 
+        optimizer = SGD(model_iter.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay)
+        # scheduler = 
         criterion = nn.CrossEntropyLoss()
         
-        model.train()
         epoch = 0
         progress_bar = tqdm(total=torch.sum(self.graph['test_index']).item())
         
-        counter = 0 # if we cann't include new unlabeled nodes, break
+        counter = 0 # if we cann't include new unlabeled nodes for some iterations, break
         N = None
         
         loss_list = []
-        acc_list = []
-        val_acc_list = []
+        metric_list = []
+        val_metric_list = []
+        test_metric_list = []
         pseudo_loss_list = []
+        threshold_accuracy_list = []
         add_num_list = [(torch.sum(self.graph.pseudolabel==-1) - torch.sum(self.graph['val_index'])).item()]
         pseudolabel_num = []
         
-        while torch.sum(self.graph.pseudolabel==-1) > torch.sum(self.graph['val_index']):
-            # iteration untill all nodes are 
-            graph=self.training_graph
+        
+        # record the best model between two labels additions
+        best_model_iter = None 
+        best_val_metric_iter = -torch.inf
+        best_test_metric_iter = -torch.inf # corresponding test_metric to best_val_metric
+        
+        # while torch.sum(self.graph.pseudolabel==-1) > torch.sum(self.graph['val_index']):
+        while torch.sum(self.graph.pseudolabel>=0) <= torch.sum(self.graph['val_index']+self.graph['test_index']):
+            model_iter.train()
             
+            # iteration untill all nodes included 
+            graph_iter=self.training_graph
+            
+            # calculate the loss
             optimizer.zero_grad()
-            
-            # out, autoencoder_loss = model(graph, auto_encoder_loss_flag=True)    
-            out = model(graph)    #TODO: for GCN
-            # out = model(graph, auto_encoder_loss_flag=False)  #TODO: 不用MLP了记得改
-            # autoencoder_loss = 0#TODO: 不用MLP了记得改
-            
-            groundtruth_loss = criterion(out[graph.train_index], graph.y[graph.train_index])
-            # loss = groundtruth_loss + self.autoencoder_weight * autoencoder_loss # TODO:for GCN
-            loss = groundtruth_loss # TODO:for GCN
-            
-            acc = torch.argmax(out[graph.training_labels>=0],dim=1)==graph.y[graph.train_index]
-            acc = torch.sum(acc) / torch.sum(graph.train_index)
-            
-            # loss_list.append([groundtruth_loss.item(), autoencoder_loss.item()]) # TODO: for GCN
-            # loss_list.append([groundtruth_loss.item(), 0])
-            acc_list.append(acc.item())
-            pseudolabel_num.append(torch.sum(graph.pseudolabel >= 0).item())
-            
-            # if self.method == 'flexmatch' and torch.sum(graph.pseudolabel>=0) > 0: # TODO:for GCN
-            #     pseudolabel_index = graph.pseudolabel >= 0
-            #     pseudolabel_loss = criterion(out[pseudolabel_index], graph.pseudolabel[pseudolabel_index])
-            #     pseudo_loss_list.append(pseudolabel_loss.item())
-            #     loss = loss + self.flexmatch_weight*pseudolabel_loss
-                
+            out, loss = self.cal_loss(model_name=self.model_name, model=model_iter, graph=graph_iter, criterion=criterion, record=[loss_list, pseudo_loss_list])
+
             loss.backward()
             optimizer.step()
+            # loss_list.append([groundtruth_loss.item(), 0])
             
-            val_acc = self.eval('val')
-            val_acc_list.append(val_acc.item())
-            if self.stopper.early_stop(epoch, val_acc):
-                break # TODO:for GCN
+            # calculate metric on validation data and training data
+            metric = None 
+            if self.metric == 'accuracy':
+                metric = cal_accuracy(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
+            elif self.metric == 'auc':
+                metric = cal_auc_score(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
+            
+            metric_list.append(metric.item())
+            pseudolabel_num.append(torch.sum(graph_iter.pseudolabel >= 0).item())
+
+            val_metric = self.eval(model_iter, graph_iter, keyword='val', metric=self.metric)
+            test_metric = self.eval(model_iter, graph_iter, keyword='test', metric=self.metric)
+            val_metric_list.append(val_metric.item())
+            test_metric_list.append(test_metric.item())
+            
+            # record model 
+            if val_metric > best_val_metric_iter:
+                best_val_metric_iter = val_metric
+                best_test_metric_iter = test_metric
+                best_model_iter = model_iter
+            
+            
+            if self.stopper.early_stop(epoch, val_metric):
+                
+                # record the global best model
+                if best_val_metric_iter > self.best_val_metric:
+                    self.best_val_metric = best_val_metric_iter
+                    self.best_test_metric = best_test_metric_iter
+                    self.best_model = deepcopy(best_model_iter)
+                    self.best_graph = deepcopy(graph_iter)
+                    self.best_training_num_record = N 
+               
+                if self.model_name == 'mlp':
+                    break    
+                    
+                # break 
+                out = best_model_iter(graph_iter)
+                
+                # just for observation
+                threshold_accuracy = accuracy_threshold(out, graph_iter, self.fixed_threshold)
+                threshold_accuracy_list.append(threshold_accuracy.item())
+                
                 self.update_train_data(out)
+                
                 epoch = 0
                 self.stopper.reset()
-                N = torch.sum(self.graph.pseudolabel>=0).item()
+                N = torch.sum(graph_iter.pseudolabel>=0).item()
                 if N == progress_bar.n:
                     counter = counter + 1
                     if counter>5:
                         break
                 else:
                     counter = 0
-                add_num_list.append((torch.sum(self.graph.pseudolabel==-1) - torch.sum(self.graph['val_index'])).item())
+                add_num_list.append((torch.sum(graph_iter.pseudolabel==-1) - torch.sum(graph_iter['val_index'])).item())
                 
                 # reinitialize model
-                if N<torch.sum(self.graph['test_index']).item():
-                    model.restart()
-            
-                
-            progress_bar.set_description(f'Train accuracy: {acc.item()}, Loss:{loss.item()}')
-            progress_bar.n = torch.sum(self.graph.pseudolabel>=0).item()
+                if N<torch.sum(graph_iter['test_index']+graph_iter['val_index']).item():
+                    
+                    # model.restart()
+                    model_iter = load_model(self.model_name, graph_iter, self.args)
+                    model_iter.to(torch.cuda.current_device())
+                    optimizer = SGD(model_iter.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.args.weight_decay)
+                    
+            progress_bar.set_description(f'Train accuracy: {metric.item()}, Loss:{loss.item()}, AUC:{metric}')
+            progress_bar.n = torch.sum(graph_iter.pseudolabel>=0).item()
             progress_bar.refresh()
             epoch = epoch + 1
-            
-        acc = self.eval()
+        
+        
         
         if not os.path.exists(utils_data_pt):
             os.mkdir(utils_data_pt)
+            
         np.save(os.path.join(utils_data_pt, 'loss.npy'), loss_list)
-        np.save(os.path.join(utils_data_pt, 'acc.npy'), acc_list)
-        np.save(os.path.join(utils_data_pt, 'val_acc.npy'), val_acc_list)
+        np.save(os.path.join(utils_data_pt, 'metric.npy'), metric_list)
+        np.save(os.path.join(utils_data_pt, 'val_metric.npy'), val_metric_list)
+        np.save(os.path.join(utils_data_pt, 'test_metric.npy'), test_metric_list)
+        np.save(os.path.join(utils_data_pt, 'threshold_accuracy.npy'), threshold_accuracy_list)
         np.save(os.path.join(utils_data_pt, 'add_num.npy'), add_num_list)
         np.save(os.path.join(utils_data_pt, 'pseudo_loss.npy'), pseudo_loss_list)
-        np.save(os.path.join(utils_data_pt, 'final_accuracy.npy'), np.array([acc.item()]))
+        np.save(os.path.join(utils_data_pt, 'final_accuracy.npy'), np.array([self.best_test_metric.item()]))
+        print(f'Final metric:{self.best_test_metric.item()}')
         np.save(os.path.join(utils_data_pt, 'pseudolabel_num.npy'), pseudolabel_num)
         
         
         with open(os.path.join(utils_data_pt, 'setting.yaml'), 'w') as f:
             yaml.dump(vars(args), f)
     
-        return acc
+        return self.best_test_metric
             
 def save_res(acc, data_name, root='res/baselines.csv'):
     df = None
@@ -230,12 +315,29 @@ def save_res(acc, data_name, root='res/baselines.csv'):
     df.to_csv(root)
     df.to_excel('res/baselines.xlsx')
 
-
+def load_model(model_name, graph, args):
+    if model_name == 'mlp':
+        return MLP(in_channels=graph.num_features,
+                   out_channels=graph.num_class,
+                   hidden_channels=args.hidden_dim,
+                   num_layers=args.num_layers,
+                   dropout=args.dropout
+                   )
+        
+    elif model_name == 'ourModel':
+        return ourModel(input_dim=graph.num_features, 
+                    output_dim=graph.num_class, 
+                    hidden_dim=args.hidden_dim, 
+                    num_layers=args.num_layers,
+                    dropout=args.dropout)
+    
+    else:
+        assert model_name in ['mlp', 'ourModel']
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='Cora')
+    parser.add_argument('--dataset', type=str, default='twitch-e')
     parser.add_argument('--gpu', type=int, default=4)
     
     # hyper-parameter
@@ -245,44 +347,55 @@ if __name__ == "__main__":
     # for flexmatch
     parser.add_argument('--flex_batch', type=float, default=64)
     parser.add_argument('--flexmatch_weight', type=float, default=0.8)
-    parser.add_argument('--fixed_threshold', type=float, default=0.85)
+    parser.add_argument('--fixed_threshold', type=float, default=0.88)
     # for dataset 
-    parser.add_argument('--train_ratio', type=float, default=0.8)
-    parser.add_argument('--test_ratio', type=float, default=0.1)
-    parser.add_argument('--val_ratio', type=float, default=0.1)
+    parser.add_argument('--train_ratio', type=float, default=0.5)
+    parser.add_argument('--test_ratio', type=float, default=0.25)
+    parser.add_argument('--val_ratio', type=float, default=0.25)
+    parser.add_argument('--metric', type=str, default='auc')
     # for model
-    parser.add_argument('--hidden_dim', type=int, default=8) # also the embedding dimension of encoder
+    parser.add_argument('--model_name', type=str, default='ourModel') # also the embedding dimension of encoder
+    parser.add_argument('--mask_edge_flag', action='store_true', default=True) # mask the edges
+    parser.add_argument('--hidden_dim', type=int, default=32) # also the embedding dimension of encoder
     parser.add_argument('--num_layers', type=int, default=3)
     parser.add_argument('--dropout', type=float, default=0.3)
     # for optimizer
-    parser.add_argument('--lr', type=float, default=1e-2)
+    parser.add_argument('--lr', type=float, default=0.01)
+    parser.add_argument('--momentum', type=float, default=0.9)
+    parser.add_argument('--weight_decay', type=float, default=0.001)
     # parser.add_argument('--weight_decay', type=float, default=0.0005)
     
     # utils_data_pt = './utils_data/new_model_DE'
-    utils_data_pt = './wandb' # TODO: for GCN
+    
+    seed = 42
+    random.seed(seed)  
+    torch.manual_seed(seed)  
+    torch.cuda.manual_seed_all(seed) 
     
     args = parser.parse_args()
     dataset = load_dataset(args.dataset)
-
+    utils_data_pt = f'./utils_data/{args.model_name}_{args.dataset}_{args.mask_edge_flag if args.model_name == "ourModel" else ""}' 
+    
+    
     split_dataset(dataset, args.train_ratio, args.test_ratio, args.val_ratio)
     graph = prepocessing(dataset)
-    # graph.edge_index = torch.zeros((2,0), dtype=int) #TODO: 不用MLP了记得改
-    # model = ourModel(input_dim=graph.num_features, 
-    #                  output_dim=graph.num_class, 
-    #                  hidden_dim=args.hidden_dim, 
-    #                  num_layers=args.num_layers,
-    #                  dropout=args.dropout)
-    model = GCN(input_dim=graph.num_features,
-                output_dim=graph.num_class,
-                hidden_dim=args.hidden_dim, 
-                 num_layers=args.num_layers,
-                 dropout=args.dropout)
     
-    trainer = Trainer(graph, model, device_num=args.gpu, lr=args.lr, 
+    model = load_model(args.model_name, graph, args)
+    
+    # model = GCN(input_dim=graph.num_features
+    #             output_dim=graph.num_class,
+    #             hidden_dim=args.hidden_dim, 
+    #              num_layers=args.num_layers,
+    #              dropout=args.dropout)
+    
+    trainer = Trainer(graph, model, device_num=args.gpu, model_name=args.model_name,
+                      lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay,
+                      metric=args.metric,
                       fixed_threshold=args.fixed_threshold,
                       flex_batch=args.flex_batch,
                       flexmatch_weight=args.flexmatch_weight,
-                      autoencoder_weight=args.autoencoder_weight)
+                      autoencoder_weight=args.autoencoder_weight,
+                      args=args)
     acc = trainer.train()
     
     

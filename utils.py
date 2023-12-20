@@ -1,6 +1,7 @@
 from Non_Homophily_Large_Scale.dataset import *
 from torch_geometric.data import Data
 import random 
+from sklearn.metrics import roc_auc_score 
 
 # datanames = ['twitch-e', 'fb100', 'ogbn-proteins', 'deezer-europe', 'arxiv-year', 'pokec', 'snap-patents',
 #              'yelp-chi', 'ogbn-arxiv', 'ogbn-products', 'Cora', 'CiteSeer', 'PubMed', 'chameleon', 'cornell',
@@ -86,6 +87,51 @@ def remove_edges(data, edge_indices):
     if data.edge_attr is not None:
         data.edge_attr = data.edge_attr[mask]
     return data
+
+
+def eval_rocauc(y_true, y_pred):
+    """ adapted from ogb
+    https://github.com/snap-stanford/ogb/blob/master/ogb/nodeproppred/evaluate.py"""
+    rocauc_list = []
+    y_true = y_true.detach().cpu().numpy()
+    if y_true.shape[1] == 1:
+        # use the predicted class for single-class classification
+        y_pred = F.softmax(y_pred, dim=-1)[:,1].unsqueeze(1).detach().cpu().numpy()
+    else:
+        y_pred = y_pred.detach().cpu().numpy()
+
+    for i in range(y_true.shape[1]):
+        # AUC is only defined when there is at least one positive data.
+        if np.sum(y_true[:, i] == 1) > 0 and np.sum(y_true[:, i] == 0) > 0:
+            is_labeled = y_true[:, i] == y_true[:, i]
+            score = roc_auc_score(y_true[is_labeled, i], y_pred[is_labeled, i])
+                                
+            rocauc_list.append(score)
+
+    if len(rocauc_list) == 0:
+        raise RuntimeError(
+            'No positively labeled data available. Cannot compute ROC-AUC.')
+
+    return sum(rocauc_list)/len(rocauc_list)
+
+
+
+def cal_accuracy(labels, logits):
+    y_hat = torch.argmax(logits, dim=1)
+    return torch.mean((y_hat==labels).float())
+
+def cal_auc_score(labels, logits):
+    return roc_auc_score(labels.cpu().numpy(),torch.softmax(logits, dim=1)[:,1].cpu().detach().numpy()) 
+
+def accuracy_threshold(logits, graph, threshold):
+    out_observe = torch.softmax(logits, dim=1)
+    pred_prob, pred_y = torch.max(out_observe, dim=1)
+    pred_prob = pred_prob[graph.test_index]
+    pred_y = pred_y[graph.test_index]
+    labels = graph.y[graph.test_index][pred_prob>threshold]
+    pred_y = pred_y[pred_prob>threshold]
+    threshold_accuracy = torch.mean((pred_y==labels)*1.)
+    return threshold_accuracy
 
 class EarlyStopper:
     def __init__(self, patience=20, min_delta=0.01, max_iter=200):

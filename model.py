@@ -8,9 +8,11 @@ class Encoder(nn.Module):
     def __init__(self, in_channel, out_channel=4, hidden_channel=32) -> None:
         super(Encoder, self).__init__()
         self.fc = nn.Linear(in_features=in_channel, out_features=out_channel)
+        
         self.fc1 = nn.Linear(in_features=in_channel, out_features=hidden_channel)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(in_features=hidden_channel, out_features=out_channel)
+        
         self.in_channel = in_channel
         self.out_channel = out_channel
         
@@ -38,6 +40,7 @@ class Decoder(nn.Module):
     def __init__(self, out_channel, in_channal=4, hidden_channel=32) -> None:
         super(Decoder, self).__init__()
         self.fc = nn.Linear(in_features=in_channal, out_features=out_channel)
+        
         self.fc1 = nn.Linear(in_features=in_channal, out_features=hidden_channel)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(in_features=hidden_channel, out_features=out_channel)
@@ -64,14 +67,16 @@ class Decoder(nn.Module):
         if self.fc2.bias is not None:
             init.zeros_(self.fc2.bias)
 
+# model with encoder&decoder
 class myGCNconv(GCNConv):
     def __init__(self, in_channels, out_channels, n_class):
         super(myGCNconv, self).__init__(in_channels, out_channels)
-        self.encoder_group = nn.ModuleList([Encoder(in_channel=out_channels, out_channel=out_channels) for _ in range(n_class)]) # 线性层(self.lin)已调整维度
-        self.decoder_group = nn.ModuleList([Decoder(in_channal=out_channels, out_channel=out_channels) for _ in range(n_class)])
+        self.lin = nn.Linear(in_channels, out_channels)
+        self.encoder_group = nn.ModuleList([Encoder(out_channels) for _ in range(n_class)])
+        self.decoder_group = nn.ModuleList([Decoder(out_channels) for _ in range(n_class)])
         
         self.auto_encoder_loss_flag = False
-    
+
     def set_antoencoder_index(self, antoencoder_indices):
         self.antoencoder_indices = antoencoder_indices # pseudo node labels
     
@@ -79,20 +84,26 @@ class myGCNconv(GCNConv):
         mlp_group = self.encoder_group
         indices = self.antoencoder_indices
         # group
-        sorted_indices = torch.argsort(indices) # indices[sorted_indices] = [-1,-1,-1,...0,0,0,...,1,1,1...]
+        sorted_indices = torch.argsort(indices)
         sorted_antoencoder_indices = self.antoencoder_indices[sorted_indices]
-        sorted_x = x[sorted_indices] # x -> [-1,-1,...0,0,0,...1,1,1...](labels)
-         
+        sorted_x = x[sorted_indices]
+        
         # forward
         outputs = []
         start_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][0]
         end_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][-1] + 1
-        # outputs.append(sorted_x[start_idx:end_idx]) # add features of unlabeled nodes
-        outputs.append(torch.zeros_like(sorted_x[start_idx:end_idx])) # add features of unlabeled nodes
-        
+        self.unlabeled_features = sorted_x[start_idx:end_idx] # save for reconstruction
+        self.unlabeled_indices = sorted_indices[start_idx:end_idx]
+        outputs.append(torch.zeros(((end_idx-start_idx), mlp_group[0].out_channel)).to(self.unlabeled_indices.device)) # add features of unlabeled nodes
         for mlp_idx in range(len(mlp_group)):
-            start_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][0]
-            end_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][-1] + 1
+            start_idx = None 
+            end_idx = None 
+            match_index = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0]
+            if len(match_index)==0:
+                continue 
+            else:
+                start_idx = match_index[0]
+                end_idx = match_index[-1] + 1
             
             outputs.append(mlp_group[mlp_idx](sorted_x[start_idx:end_idx]))
         
@@ -106,9 +117,9 @@ class myGCNconv(GCNConv):
         return result         
     
     def decoder_forward(self, x, index):
+        
         mlp_group = self.decoder_group
         indices = self.antoencoder_indices[index]
-        
         
         sorted_indices = torch.argsort(indices)
         sorted_antoencoder_indices = indices[sorted_indices]
@@ -116,12 +127,18 @@ class myGCNconv(GCNConv):
         
         # forward
         outputs = []
-        start_idx = (sorted_antoencoder_indices == -1 ).nonzero(as_tuple=True)[0][0]
-        end_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][-1] + 1
-        outputs.append(torch.zeros(((end_idx-start_idx), mlp_group[0].out_channel)).to(self.unlabeled_indices.device)) # add features of unlabeled nodes
+        # start_idx = (sorted_antoencoder_indices == -1 ).nonzero(as_tuple=True)[0][0] 
+        # end_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][-1] + 1
+        # outputs.append(torch.zeros(((end_idx-start_idx), mlp_group[0].out_channel)).to(self.unlabeled_indices.device)) # add features of unlabeled nodes
         for mlp_idx in range(len(mlp_group)):
-            start_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][0]
-            end_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][-1] + 1
+            match_indices = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0]
+            start_idx = None 
+            end_idx = None 
+            if len(match_indices) == 0:
+                continue 
+            else:
+                start_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][0]
+                end_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][-1] + 1
             
             outputs.append(mlp_group[mlp_idx](sorted_x[start_idx:end_idx]))
         
@@ -137,7 +154,7 @@ class myGCNconv(GCNConv):
     
     def forward(self, x: Tensor, edge_index,
         edge_weight: OptTensor = None) -> Tensor:
-
+        self.add_self_loops = False
         if self.normalize:
             if isinstance(edge_index, Tensor):
                 cache = self._cached_edge_index
@@ -160,8 +177,10 @@ class myGCNconv(GCNConv):
                         self._cached_adj_t = edge_index
                 else:
                     edge_index = cache
-        
+                    
         x = self.lin(x)
+        
+        x_clone = x.clone()
         
         loss = None
         if self.auto_encoder_loss_flag:
@@ -170,16 +189,15 @@ class myGCNconv(GCNConv):
         x = self.encoder_forward(x)
         # x = torch.stack([self.encoder_group[i](x[i]) for i in self.antoencoder_indices]).squeeze()
         
-        # propagate_type: (x: Tensor, edge_weight: OptTensor)
 
-        # print(x.size())
-        out = self.propagate(edge_index, x=x, edge_weight=edge_weight,
-                             size=None)
+        out = self.propagate(edge_index, x=x, edge_weight=edge_weight,size=None)
 
         # out[self.unlabeled_indices] = self.unlabeled_features
         
         if self.bias is not None:
-            out = out + self.bias
+            out = out + self.bias if out is not None else self.bias
+        
+        out = self.update_node(x_clone, out)
 
         if self.auto_encoder_loss_flag:
             self.auto_encoder_loss_flag = False
@@ -187,17 +205,19 @@ class myGCNconv(GCNConv):
         else:
             return out
     
-    # def message(self, x_j: Tensor, edge_weight: OptTensor) -> Tensor:
-    #     x_j = super().message(x_j, edge_weight)
-    #     return x_j
-        # return torch.stack([self.encoder_group[i](x_j[i]) for i in self.antoencoder_index])
+    def update_node(self, x, neighbor_feature):
+        relu = nn.ReLU()
+        
+        return relu(x+neighbor_feature)
     
     def aggregate(self, inputs, index, ptr, dim_size):
         # inputs = torch.stack([self.decoder_group[self.antoencoder_index_node[input_node_num]](inputs[i]) for i,input_node_num in enumerate(index)])
-        # inputs = self.decoder_forward(inputs, index)
-        # return scatter_mean(inputs, index, dim=0, dim_size=dim_size)
         
-        return scatter_mean(inputs, index, dim=0, dim_size=dim_size)
+        if len(inputs) == 0:
+            return 
+        else:
+            inputs = self.decoder_forward(inputs, index)
+            return scatter_mean(inputs, index, dim=0, dim_size=dim_size)
 
     def cal_autoencoder_loss(self, features):
         # |A x \tilede{A}-1|_2
@@ -223,8 +243,7 @@ class myGCNconv(GCNConv):
             encoder.restart()
         for decoder in self.decoder_group:
             decoder.restart()
-    
-
+  
 class ourModel(nn.Module):
     def __init__(self, 
                  input_dim, 
@@ -246,8 +265,8 @@ class ourModel(nn.Module):
                 for i in range(num_layers-1)
         ])
         self.dropout = dropout
-        
-        # self.probability
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
     
     def forward(self,data,auto_encoder_loss_flag=False):
         # select autoencoder index
@@ -261,18 +280,26 @@ class ourModel(nn.Module):
             x1 = None
             if auto_encoder_loss_flag:
                 conv.set_auto_encoder_loss_flag()
-                x1, auto_encoder_loss = conv(x, adj_t)
+                x1, sub_auto_encoder_loss = conv(x, adj_t)
+                auto_encoder_loss = sub_auto_encoder_loss if auto_encoder_loss is None else auto_encoder_loss + sub_auto_encoder_loss
+                    
             else:
                 x1 = conv(x, adj_t)
-            x1 = F.relu(bn(x1))
+            # x1 = F.relu(bn(x1))
+            x1 = bn(x1)
             if self.training:
                 x1 = F.dropout(x1, p=self.dropout)
             x = x1
             
             # if auto_encoder_loss_flag:
             #     auto_encoder_loss_flag = auto_encoder_loss + conv.cal_autoencoder_loss(x)
-            
-        x = self.convs[-1](x, adj_t)
+        
+        if auto_encoder_loss_flag:   
+            self.convs[-1].set_auto_encoder_loss_flag()
+            x, sub_auto_encoder_loss = self.convs[-1](x, adj_t)
+            auto_encoder_loss = auto_encoder_loss + sub_auto_encoder_loss
+        else:
+            x = self.convs[-1](x, adj_t)
         
         if auto_encoder_loss_flag:
             return x, auto_encoder_loss
@@ -283,7 +310,6 @@ class ourModel(nn.Module):
         for convs in self.convs:
             convs.restart()
 
-    
 class GCN(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers,
                  dropout):
@@ -318,12 +344,53 @@ class GCN(nn.Module):
         x = self.convs[-1](x, adj_t)
         return x
 
-# # model with encoder&decoder
+class MLP(nn.Module):
+    """ adapted from https://github.com/CUAI/CorrectAndSmooth/blob/master/gen_models.py """
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
+                 dropout=.5):
+        super(MLP, self).__init__()
+        self.lins = nn.ModuleList()
+        self.bns = nn.ModuleList()
+        if num_layers == 1:
+            # just linear layer i.e. logistic regression
+            self.lins.append(nn.Linear(in_channels, out_channels))
+        else:
+            self.lins.append(nn.Linear(in_channels, hidden_channels))
+            self.bns.append(nn.BatchNorm1d(hidden_channels))
+            for _ in range(num_layers - 2):
+                self.lins.append(nn.Linear(hidden_channels, hidden_channels))
+                self.bns.append(nn.BatchNorm1d(hidden_channels))
+            self.lins.append(nn.Linear(hidden_channels, out_channels))
+
+        self.dropout = dropout
+        self.hidden_dim = hidden_channels
+        self.num_layers = num_layers
+
+    def reset_parameters(self):
+        for lin in self.lins:
+            lin.reset_parameters()
+        for bn in self.bns:
+            bn.reset_parameters()
+
+    def forward(self, data, input_tensor=False):
+        if not input_tensor:
+            x = data.x
+        else:
+            x = data
+        for i, lin in enumerate(self.lins[:-1]):
+            x = lin(x)
+            x = F.relu(x, inplace=True)
+            x = self.bns[i](x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.lins[-1](x)
+        return x
+
+# model with only encoder
 # class myGCNconv(GCNConv):
 #     def __init__(self, in_channels, out_channels, n_class):
 #         super(myGCNconv, self).__init__(in_channels, out_channels)
-#         self.encoder_group = nn.ModuleList([Encoder(out_channels) for _ in range(n_class)])
-#         self.decoder_group = nn.ModuleList([Decoder(out_channels) for _ in range(n_class)])
+#         self.encoder_group = nn.ModuleList([Encoder(in_channel=out_channels, out_channel=out_channels) for _ in range(n_class)]) # 线性层(self.lin)已调整维度
+#         self.decoder_group = nn.ModuleList([Decoder(in_channal=out_channels, out_channel=out_channels) for _ in range(n_class)])
         
 #         self.auto_encoder_loss_flag = False
     
@@ -334,17 +401,17 @@ class GCN(nn.Module):
 #         mlp_group = self.encoder_group
 #         indices = self.antoencoder_indices
 #         # group
-#         sorted_indices = torch.argsort(indices)
+#         sorted_indices = torch.argsort(indices) # indices[sorted_indices] = [-1,-1,-1,...0,0,0,...,1,1,1...]
 #         sorted_antoencoder_indices = self.antoencoder_indices[sorted_indices]
-#         sorted_x = x[sorted_indices]
-        
+#         sorted_x = x[sorted_indices] # x -> [-1,-1,...0,0,0,...1,1,1...](labels)
+         
 #         # forward
 #         outputs = []
 #         start_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][0]
 #         end_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][-1] + 1
-#         self.unlabeled_features = sorted_x[start_idx:end_idx] # save for reconstruction
-#         self.unlabeled_indices = sorted_indices[start_idx:end_idx]
-#         outputs.append(torch.zeros(((end_idx-start_idx), mlp_group[0].out_channel)).to(self.unlabeled_indices.device)) # add features of unlabeled nodes
+#         # outputs.append(sorted_x[start_idx:end_idx]) # add features of unlabeled nodes
+#         outputs.append(torch.zeros_like(sorted_x[start_idx:end_idx])) # add features of unlabeled nodes
+        
 #         for mlp_idx in range(len(mlp_group)):
 #             start_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][0]
 #             end_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][-1] + 1
@@ -392,7 +459,8 @@ class GCN(nn.Module):
     
 #     def forward(self, x: Tensor, edge_index,
 #         edge_weight: OptTensor = None) -> Tensor:
-
+#         self.add_self_loops = False
+        
 #         if self.normalize:
 #             if isinstance(edge_index, Tensor):
 #                 cache = self._cached_edge_index
@@ -415,7 +483,7 @@ class GCN(nn.Module):
 #                         self._cached_adj_t = edge_index
 #                 else:
 #                     edge_index = cache
-                    
+        
 #         x = self.lin(x)
         
 #         loss = None
@@ -431,7 +499,7 @@ class GCN(nn.Module):
 #         out = self.propagate(edge_index, x=x, edge_weight=edge_weight,
 #                              size=None)
 
-#         out[self.unlabeled_indices] = self.unlabeled_features
+#         # out[self.unlabeled_indices] = self.unlabeled_features
         
 #         if self.bias is not None:
 #             out = out + self.bias
@@ -450,6 +518,8 @@ class GCN(nn.Module):
 #     def aggregate(self, inputs, index, ptr, dim_size):
 #         # inputs = torch.stack([self.decoder_group[self.antoencoder_index_node[input_node_num]](inputs[i]) for i,input_node_num in enumerate(index)])
 #         inputs = self.decoder_forward(inputs, index)
+#         # return scatter_mean(inputs, index, dim=0, dim_size=dim_size)
+        
 #         return scatter_mean(inputs, index, dim=0, dim_size=dim_size)
 
 #     def cal_autoencoder_loss(self, features):
@@ -477,6 +547,8 @@ class GCN(nn.Module):
 #         for decoder in self.decoder_group:
 #             decoder.restart()
     
+
+
 
 
 # model based on probability
