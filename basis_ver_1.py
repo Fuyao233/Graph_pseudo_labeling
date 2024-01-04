@@ -127,3 +127,4 @@ for num in range(basis_num):
 # print(result)
 # exp_final = exp_t.subs((i, j) for i in a[3:]+b for j in result)
 # print(exp_final)
+
