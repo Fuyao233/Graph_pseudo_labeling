@@ -35,9 +35,11 @@ class Flexmatch:
         return res==1 # 'True' means selected sample 
     
     def select(self):
+        print(f'Threshold: {self.tau}')
         # naive, fixed threshold
         confidence, y_hat = self.prediction.max(dim=1)
-        unlabeled_index = self.graph.pseudolabel == -1 # potentially add validation nodes
+        # unlabeled_index = self.graph.pseudolabel == -1 # potentially add validation nodes
+        unlabeled_index = self.graph.test_index * (self.graph.pseudolabel == -1)
         
         indices = torch.zeros_like(self.graph.y)==1
         
@@ -50,9 +52,9 @@ class Flexmatch:
         
         pseudo_label_acc = torch.mean((y_hat[indices] == self.graph.y[indices])*1.)
         if torch.sum(indices)==0:
-            print(r'\nAdd no pseudo labels.')
+            print(f'\nAdd no pseudo labels.\n')
         else:
-            print(f'\nNumber of new labels: {torch.sum(indices)}; Accuracy of pseudo labels when selecting: {pseudo_label_acc.item()}')
+            print(f'\nNumber of new labels: {torch.sum(indices)}; Accuracy of pseudo labels when selecting: {pseudo_label_acc.item()}\n')
         
         
         # old method

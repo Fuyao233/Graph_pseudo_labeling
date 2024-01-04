@@ -65,10 +65,11 @@ class Trainer:
         
         # self.update_autoencoder_prob()
         # print(self.graph.autoencoder_prob)
+        self.update_pipeline_flag = 0
         self.update_training_labels()
         self.update_training_graph()
         
-        self.stopper = EarlyStopper(patience=300, max_iter=300)
+        self.stopper = EarlyStopper(patience=100, max_iter=100)
     
     def eval(self, model, graph, keyword='test', metric='auc'):
         model.eval()
@@ -104,24 +105,44 @@ class Trainer:
             training graph only contains nodes with labels or pseudolabels and edges with two labeled ends 
         """
         training_graph = deepcopy(self.graph)
+
+        # if self.global_iteration >= 3:
+        #     self.args.mask_edge_flag = False 
         
-        if self.global_iteration >= 3:
-            self.args.mask_edge_flag = False 
-        
-        if self.args.mask_edge_flag:
+        print(f'pipeline_flag:{self.update_pipeline_flag}')
+        if self.update_pipeline_flag==0:
             # edge mask
             training_graph.edge_index = torch.zeros((2,0)).to(torch.cuda.current_device(), dtype=graph.edge_index.dtype)
+            
+        elif self.update_pipeline_flag==1:
+            # save homo edge
+            training_graph.edge_index = self.graph.edge_index[:,training_graph.homo_edge_flags]
+            # self.update_pipeline_flag = self.update_pipeline_flag + 1
+            # self.update_pipeline_flag = 0
+        
+        elif self.update_pipeline_flag==2:
+            # save all edge
+            training_graph.edge_index = self.graph.edge_index
+            # self.update_pipeline_flag = 0
+
+        else:
+            assert self.update_pipeline_flag <= 2
         
         delete_node_indices = torch.where(self.graph.training_labels==-1)[0]
         delete_edge_indices = find_edges(training_graph,delete_node_indices)
         training_graph = remove_edges(training_graph,delete_edge_indices)
         
         self.training_graph = training_graph
+        self.args.mask_edge_flag = self.training_graph.edge_index.size()[1] <= 0 # calculate autoencoder loss after adding edges
         
     
     def update_train_data(self, prediction):
         prediction = torch.softmax(prediction, dim=1)
         if self.method == 'flexmatch':
+            # dynamic threshold
+            # Flexmatch(self.graph, prediction, self.fixed_threshold if self.update_pipeline_flag-1==0 else self.fixed_threshold*self.fixed_threshold, self.flex_batch).select()
+            
+            # fixed threshold
             Flexmatch(self.graph, prediction, self.fixed_threshold, self.flex_batch).select()
         
         self.update_training_labels()
@@ -187,7 +208,7 @@ class Trainer:
         test_metric_list = []
         pseudo_loss_list = []
         threshold_accuracy_list = []
-        add_num_list = [(torch.sum(self.graph.pseudolabel==-1) - torch.sum(self.graph['val_index'])).item()]
+        add_num_list = []
         pseudolabel_num = []
         
         
@@ -250,30 +271,42 @@ class Trainer:
                 out = best_model_iter(graph_iter)
                 
                 # just for observation
-                threshold_accuracy = accuracy_threshold(out, graph_iter, self.fixed_threshold)
+                threshold_accuracy, add_num_obs = accuracy_threshold(out, graph_iter, self.fixed_threshold if self.update_pipeline_flag-1==0 else self.fixed_threshold*self.fixed_threshold)
                 threshold_accuracy_list.append(threshold_accuracy.item())
                 
-                self.update_train_data(out)
-                
                 epoch = 0
+
+                # reinitialize model
+                # if N<torch.sum(graph_iter['test_index']+graph_iter['val_index']).item():
+                    
+                # model.restart()
+                model_iter = load_model(self.model_name, graph_iter, self.args)
+                model_iter.to(torch.cuda.current_device())
+                
+                # if self.update_pipeline_flag == 2:
+                # # inherit encoder&decoder after training on graph with only homophily edges 
+                #     for src_layer, tgt_layer in zip(best_model_iter.convs, model_iter.convs):
+                #         for src_encoder, tgt_encoder in zip(src_layer.encoder_group, tgt_layer.encoder_group):
+                #             tgt_encoder.load_state_dict(src_encoder.state_dict())
+
+                #         for src_decoder, tgt_decoder in zip(src_layer.decoder_group, tgt_layer.decoder_group):
+                #             tgt_decoder.load_state_dict(src_decoder.state_dict())
+                
+                optimizer = SGD(model_iter.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.args.weight_decay)
+                
                 self.stopper.reset()
-                N = torch.sum(graph_iter.pseudolabel>=0).item()
+                self.update_train_data(out)
+                N = torch.sum(self.training_graph.pseudolabel>=0).item()
                 if N == progress_bar.n:
                     counter = counter + 1
                     if counter>5:
                         break
                 else:
                     counter = 0
-                add_num_list.append((torch.sum(graph_iter.pseudolabel==-1) - torch.sum(graph_iter['val_index'])).item())
+                add_num_list.append(add_num_obs[0])
                 
-                # reinitialize model
-                if N<torch.sum(graph_iter['test_index']+graph_iter['val_index']).item():
-                    
-                    # model.restart()
-                    model_iter = load_model(self.model_name, graph_iter, self.args)
-                    model_iter.to(torch.cuda.current_device())
-                    optimizer = SGD(model_iter.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.args.weight_decay)
-                    
+
+            
             progress_bar.set_description(f'Train accuracy: {metric.item()}, Loss:{loss.item()}, AUC:{metric}')
             progress_bar.n = torch.sum(graph_iter.pseudolabel>=0).item()
             progress_bar.refresh()
@@ -342,12 +375,12 @@ if __name__ == "__main__":
     
     # hyper-parameter
     # for autoencoder
-    parser.add_argument('--autoencoder_weight', type=float, default=0.01)
+    parser.add_argument('--autoencoder_weight', type=float, default=0.1)
     # parser.add_argument('--embedding_dim', type=float, default=10)
     # for flexmatch
     parser.add_argument('--flex_batch', type=float, default=64)
     parser.add_argument('--flexmatch_weight', type=float, default=0.8)
-    parser.add_argument('--fixed_threshold', type=float, default=0.88)
+    parser.add_argument('--fixed_threshold', type=float, default=0.9)
     # for dataset 
     parser.add_argument('--train_ratio', type=float, default=0.5)
     parser.add_argument('--test_ratio', type=float, default=0.25)
@@ -374,7 +407,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     dataset = load_dataset(args.dataset)
-    utils_data_pt = f'./utils_data/{args.model_name}_{args.dataset}_{args.mask_edge_flag if args.model_name == "ourModel" else ""}' 
+    utils_data_pt = f'./utils_data/1_stage_{args.model_name}_{args.dataset}_{args.mask_edge_flag if args.model_name == "ourModel" else ""}' 
     
     
     split_dataset(dataset, args.train_ratio, args.test_ratio, args.val_ratio)

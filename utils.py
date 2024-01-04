@@ -69,7 +69,12 @@ def prepocessing(dataset):
         if key == 'node_feat':
             continue
         data[key] = graph[key]
-        
+    
+    # identify homo and hetero edges
+    in_node_labels = data.y[data.edge_index[0,:]]
+    out_node_labels = data.y[data.edge_index[1,:]]
+    data.homo_edge_flags = in_node_labels == out_node_labels
+    
     return data
 
 def find_edges(data, node_indices):
@@ -88,6 +93,13 @@ def remove_edges(data, edge_indices):
         data.edge_attr = data.edge_attr[mask]
     return data
 
+# def identify_homo_indices(graph):
+#     for i in range(graph.num_class):
+#         homo_edge_indices = torch.logical_and(torch.graph.training_labels == i
+#     pass 
+
+# def identify_hetero_indices(graph):
+#     pass 
 
 def eval_rocauc(y_true, y_pred):
     """ adapted from ogb
@@ -126,12 +138,12 @@ def cal_auc_score(labels, logits):
 def accuracy_threshold(logits, graph, threshold):
     out_observe = torch.softmax(logits, dim=1)
     pred_prob, pred_y = torch.max(out_observe, dim=1)
-    pred_prob = pred_prob[graph.test_index]
-    pred_y = pred_y[graph.test_index]
-    labels = graph.y[graph.test_index][pred_prob>threshold]
+    pred_prob = pred_prob[graph.test_index*(graph.pseudolabel == -1)]
+    pred_y = pred_y[graph.test_index*(graph.pseudolabel == -1)]
+    labels = graph.y[graph.test_index*(graph.pseudolabel == -1)][pred_prob>threshold]
     pred_y = pred_y[pred_prob>threshold]
     threshold_accuracy = torch.mean((pred_y==labels)*1.)
-    return threshold_accuracy
+    return threshold_accuracy, pred_y.size()
 
 class EarlyStopper:
     def __init__(self, patience=20, min_delta=0.01, max_iter=200):
@@ -140,7 +152,7 @@ class EarlyStopper:
         self.counter = 0
         self.acc_record = -np.inf
         self.epoch_counter =0
-        self.max_iter = 100
+        self.max_iter = max_iter
         self.loss = np.inf
 
     def reset(self):
