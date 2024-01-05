@@ -1,6 +1,4 @@
 import time
-start_time = time.time()
-
 import torch
 import sympy as sp
 import numpy as np
@@ -9,12 +7,12 @@ random.seed(0)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 #说明：basis_store中保存所有的基，每个维度的信息为[点类，基序号，矩阵行，矩阵列]
-def inv_basis_gen(type_num, matrix_size, basis_num):
+def inv_basis_gen(type_num, basis_num, matrix_size):
 
-    # type_num = 50
-    # matrix_size = 32
-    # basis_num = 32
-
+    # type_num = 3
+    # matrix_size = 4
+    # basis_num = 3
+    start_time = time.time()
     if (basis_num + type_num -1 > matrix_size ** 2 / 2 - matrix_size / 2):
         from warnings import warn
         warn("Number of Basis is too large, the uniqueness of each basis can not be guaranteed", UserWarning)
@@ -33,7 +31,7 @@ def inv_basis_gen(type_num, matrix_size, basis_num):
     elmtr_oprtn_num = matrix_size ** 2
     row_swap_num, row_scale_num, row_add_num = [0] * 3
     # randomly select a type of elementary matrix transformation
-    while (not (row_swap_num == elmtr_oprtn_num & row_scale_num == elmtr_oprtn_num & row_add_num == elmtr_oprtn_num)):
+    while (row_swap_num < elmtr_oprtn_num or row_scale_num < elmtr_oprtn_num or row_add_num < elmtr_oprtn_num):
         transform = random.choice(['row_swap', 'row_scale', 'row_add'])
         if transform == 'row_swap':
             row1, row2 = random.sample(range(matrix_size), 2)
@@ -57,11 +55,23 @@ def inv_basis_gen(type_num, matrix_size, basis_num):
     # basis_store = np.zeros((type_num, basis_num, matrix_size, matrix_size))
     basis_store = torch.zeros((type_num, basis_num, matrix_size, matrix_size), device=device)
 
-    # generate the first set of basis
-    for k in range(basis_num):
-        # By default, the number of basis in terms of each type cannot exceed the number of parameters (n**2/2-n/2)
+    #parallel
+    from concurrent.futures import ThreadPoolExecutor
+    def process_item(k):
         basis_store[0, k, :, :] = torch.Tensor(A.subs((i, j) for i in a for j in ortho_vec[:, k]).tolist())
-        # basis_store[0, k, :, :] = A.subs((i, j) for i in a for j in ortho_vec[:, k])
+
+    executor = ThreadPoolExecutor()
+    for k in range(basis_num):
+        executor.submit(process_item, k)
+    executor.shutdown()
+
+    # serial
+    # generate the first set of basis
+    # for k in range(basis_num):
+    #     # By default, the number of basis in terms of each type cannot exceed the number of parameters (n**2/2-n/2)
+    #     basis_store[0, k, :, :] = torch.Tensor(A.subs((i, j) for i in a for j in ortho_vec[:, k]).tolist())
+    #     print("finished")
+    #     # basis_store[0, k, :, :] = A.subs((i, j) for i in a for j in ortho_vec[:, k])
 
     # generate the other set of basis
     A0_inv = torch.inverse(basis_store[0, 0, :, :])
@@ -90,10 +100,4 @@ def inv_basis_gen(type_num, matrix_size, basis_num):
     #     basis_store[0, 2, :, :]))))
     # print(torch.mm(torch.mm(basis_store[2, 1, :, :], torch.inverse(basis_store[1, 1, :, :])), torch.mm(basis_store[1, 2, :, :], torch.inverse(
     #     basis_store[2, 2, :, :]))))
-    # print(basis_store[0, 0, :, :] @ np.linalg.inv(basis_store[1, 0, :, :]) @ basis_store[1, 1, :, :] @ np.linalg.inv(
-    #     basis_store[0, 1, :, :]))
-    # print(basis_store[0, 1, :, :] @ np.linalg.inv(basis_store[1, 1, :, :]) @ basis_store[1, 2, :, :] @ np.linalg.inv(
-    #     basis_store[0, 2, :, :]))
-    # print(basis_store[2, 1, :, :] @ np.linalg.inv(basis_store[1, 1, :, :]) @ basis_store[1, 2, :, :] @ np.linalg.inv(
-    #     basis_store[2, 2, :, :]))
     return(basis_store)
