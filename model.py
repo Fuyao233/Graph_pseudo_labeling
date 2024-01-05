@@ -4,6 +4,15 @@ from Non_Homophily_Large_Scale.models import *
 from torch_scatter import scatter_mean
 import torch.nn.init as init
 
+class basisAutoencoder(nn.Module):
+    def __init__(self, basis) -> None:
+        self.basis = basis
+        self.coefficients = nn.Parameter(torch.randn(len(basis)))
+    
+    def forward(self, input):
+        input = F.linear(input, self.basis @ self.coefficients)
+        return F.relu(input) # TODO: relu可能会影响可逆
+
 class Encoder(nn.Module):
     def __init__(self, in_channel, out_channel=4, hidden_channel=32) -> None:
         super(Encoder, self).__init__()
@@ -67,15 +76,24 @@ class Decoder(nn.Module):
         if self.fc2.bias is not None:
             init.zeros_(self.fc2.bias)
 
+
 # model with encoder&decoder
 class myGCNconv(GCNConv):
-    def __init__(self, in_channels, out_channels, n_class):
-        super(myGCNconv, self).__init__(in_channels, out_channels)
-        self.lin = nn.Linear(in_channels, out_channels)
-        self.encoder_group = nn.ModuleList([Encoder(out_channels) for _ in range(n_class)])
-        self.decoder_group = nn.ModuleList([Decoder(out_channels) for _ in range(n_class)])
-        
+    def __init__(self, in_channels, out_channels, n_class, encoder_basis=None, decoder_basis=None):
+        super(GCNConv, self).__init__(in_channels, out_channels)
+
+        if encoder_basis is None:
+            # linear autoencoder
+            self.encoder_group = nn.ModuleList([Encoder(out_channels) for _ in range(n_class)])
+            self.decoder_group = nn.ModuleList([Decoder(out_channels) for _ in range(n_class)])
+        else:
+            # basis autoencoder
+            self.encoder_group = nn.ModuleList([basisAutoencoder(encoder_basis[i]) for i in range(n_class)])
+            self.decoder_group = nn.ModuleList([basisAutoencoder(decoder_basis[i]) for i in range(n_class)])
+            
         self.auto_encoder_loss_flag = False
+        
+    
 
     def set_antoencoder_index(self, antoencoder_indices):
         self.antoencoder_indices = antoencoder_indices # pseudo node labels
