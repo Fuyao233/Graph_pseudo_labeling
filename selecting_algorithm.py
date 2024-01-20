@@ -48,6 +48,8 @@ class Flexmatch:
             # selected_indices = initial_indices
             self.graph.pseudolabel[selected_indices] = c
             
+            self.graph.val_index[selected_indices] = False # dynamically adjust validation set
+            
             indices[selected_indices] = True
         
         pseudo_label_acc = torch.mean((y_hat[indices] == self.graph.y[indices])*1.)

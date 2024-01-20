@@ -44,6 +44,9 @@ class Trainer:
         # self.flex_batch = int(self.graph.num_nodes*flex_batch_ratio) # select from a random batch of unlabeled samples each time updating training samples 
         self.flex_batch = flex_batch # select from a random batch of unlabeled samples each time updating training samples 
         
+        self.edge_status_list = []
+        self.update_stage_threshold = 0.005
+        
         self.autoencoder_weight = autoencoder_weight
         
         torch.cuda.set_device(device_num)
@@ -98,42 +101,70 @@ class Trainer:
 
         # auc_score = roc_auc_score(graph.y[graph[key]].cpu().numpy(),torch.softmax(logits[graph[key]],dim=1)[:,1].cpu().detach().numpy()) 
         return metric
+    
+    def if_edge_change(self):
+        if len(self.edge_status_list)==0 or self.update_pipeline_flag == self.edge_status_list[-1]:
+            pass 
+        else:
+            # status stage changes
+            # use the graph achieving the best metric
+            self.training_graph.train_index = self.best_graph.train_index.clone()
+            self.training_graph.test_index = self.best_graph.test_index.clone()
+            self.training_graph.val_index = self.best_graph.val_index.clone()
+            self.training_graph.training_labels = self.best_graph.training_labels.clone()
+            self.training_graph.pseudolabel = self.best_graph.pseudolabel.clone()
+            self.training_graph.homo_edge_flags = self.best_graph.homo_edge_flags.clone()
+            self.training_graph.detected_edge_flags = self.best_graph.detected_edge_flags.clone()
+    
+    def update_edge_flags(self):
+        # True denotes homo edge (under groudtruth and pseudo labels)
+        # False denotes unknow, they may be homo(undetected) or heterophily
+        
+        in_node_labels = self.training_graph.training_labels[[self.training_graph.edge_index[0,:]]]
+        out_node_labels = self.training_graph.training_labels[[self.training_graph.edge_index[1,:]]]
+        self.training_graph.homo_edge_flags = torch.logical_and(in_node_labels == out_node_labels, torch.logical_and((in_node_labels>=0), (out_node_labels>=0)))
+        self.training_graph.detected_edge_flags = torch.logical_and((in_node_labels>=0), (out_node_labels>=0))
+
+        
         
     def update_training_graph(self):
         """
             produce training graph according to self.graph 
             training graph only contains nodes with labels or pseudolabels and edges with two labeled ends 
         """
-        training_graph = deepcopy(self.graph)
-
+            
+        self.training_graph = deepcopy(self.graph)
+        self.update_edge_flags()
+        
         # if self.global_iteration >= 3:
         #     self.args.mask_edge_flag = False 
         
         print(f'pipeline_flag:{self.update_pipeline_flag}')
+        
         if self.update_pipeline_flag==0:
             # edge mask
-            training_graph.edge_index = torch.zeros((2,0)).to(torch.cuda.current_device(), dtype=graph.edge_index.dtype)
+            self.training_graph.edge_index = torch.zeros((2,0)).to(torch.cuda.current_device(), dtype=graph.edge_index.dtype)
             
         elif self.update_pipeline_flag==1:
             # save homo edge
-            training_graph.edge_index = self.graph.edge_index[:,training_graph.homo_edge_flags]
-            # self.update_pipeline_flag = self.update_pipeline_flag + 1
-            # self.update_pipeline_flag = 0
+            change_flag = self.if_edge_change()
+            self.training_graph.edge_index = self.graph.edge_index[:, self.training_graph.homo_edge_flags]
         
         elif self.update_pipeline_flag==2:
             # save all edge
-            training_graph.edge_index = self.graph.edge_index
-            # self.update_pipeline_flag = 0
+            self.if_edge_change()
+            self.training_graph.edge_index = self.graph.edge_index[:, self.training_graph.detected_edge_flags]
 
         else:
             assert self.update_pipeline_flag <= 2
         
         delete_node_indices = torch.where(self.graph.training_labels==-1)[0]
-        delete_edge_indices = find_edges(training_graph,delete_node_indices)
-        training_graph = remove_edges(training_graph,delete_edge_indices)
-        
-        self.training_graph = training_graph
+        delete_edge_indices = find_edges(self.training_graph,delete_node_indices)
+        self.training_graph = remove_edges(self.training_graph,delete_edge_indices)
+
         self.args.mask_edge_flag = self.training_graph.edge_index.size()[1] <= 0 # calculate autoencoder loss after adding edges
+        
+        
         
     
     def update_train_data(self, prediction):
@@ -188,7 +219,7 @@ class Trainer:
             assert False
         
         return out, loss
-            
+
     def train(self):
         model_iter = self.model 
         graph_iter = self.training_graph 
@@ -210,6 +241,8 @@ class Trainer:
         threshold_accuracy_list = []
         add_num_list = []
         pseudolabel_num = []
+        best_val_metric_list = []
+        homo_edge_acc = []
         
         
         # record the best model between two labels additions
@@ -218,7 +251,7 @@ class Trainer:
         best_test_metric_iter = -torch.inf # corresponding test_metric to best_val_metric
         
         # while torch.sum(self.graph.pseudolabel==-1) > torch.sum(self.graph['val_index']):
-        while torch.sum(self.graph.pseudolabel>=0) <= torch.sum(self.graph['val_index']+self.graph['test_index']):
+        while torch.sum(self.graph.pseudolabel>=0) <= torch.sum(self.graph['test_index']):
             model_iter.train()
             
             # iteration untill all nodes included 
@@ -255,14 +288,33 @@ class Trainer:
             
             
             if self.stopper.early_stop(epoch, val_metric):
+                self.edge_status_list.append(self.update_pipeline_flag)
+                # if self.update_pipeline_flag>=1:
+                #     in_node_labels = graph_iter.pseudolabel[graph_iter.edge_index[0,:]]
+                #     out_node_labels = graph_iter.pseudolabel[graph_iter.edge_index[1,:]]
+                #     detected_homo_flags = torch.logical_and(in_node_labels>=0, out_node_labels>=0)
+                #     homo_edge_acc.append(torch.mean((graph_iter.homo_edge_flags[detected_homo_flags]==graph_iter.ground_truth_homo_edge_flags[detected_homo_flags])==1).item())
+                #     print(f'Homo edge acc:{homo_edge_acc}')
+                print(f'Best val metric:{best_val_metric_iter}')
                 
-                # record the global best model
+                # record the global sbest model
                 if best_val_metric_iter > self.best_val_metric:
                     self.best_val_metric = best_val_metric_iter
                     self.best_test_metric = best_test_metric_iter
                     self.best_model = deepcopy(best_model_iter)
                     self.best_graph = deepcopy(graph_iter)
                     self.best_training_num_record = N 
+                else:
+                    # update stage
+                    if np.sum(np.array(self.edge_status_list)==self.update_pipeline_flag)>2 and best_val_metric_iter-best_val_metric_list[-1] < self.update_stage_threshold and best_val_metric_iter-best_val_metric_list[-2] < self.update_stage_threshold:
+                        self.update_pipeline_flag = self.update_pipeline_flag + 1
+                        
+                    if self.update_pipeline_flag>2:
+                        break
+                    
+                best_val_metric_list.append(best_val_metric_iter)    
+                best_val_metric_iter = -torch.inf
+                    
                
                 if self.model_name == 'mlp':
                     break    
@@ -274,26 +326,12 @@ class Trainer:
                 threshold_accuracy, add_num_obs = accuracy_threshold(out, graph_iter, self.fixed_threshold if self.update_pipeline_flag-1==0 else self.fixed_threshold*self.fixed_threshold)
                 threshold_accuracy_list.append(threshold_accuracy.item())
                 
-                epoch = 0
 
-                # reinitialize model
-                # if N<torch.sum(graph_iter['test_index']+graph_iter['val_index']).item():
-                    
-                # model.restart()
+                # restart
+                epoch = 0
                 model_iter = load_model(self.model_name, graph_iter, self.args)
                 model_iter.to(torch.cuda.current_device())
-                
-                # if self.update_pipeline_flag == 2:
-                # # inherit encoder&decoder after training on graph with only homophily edges 
-                #     for src_layer, tgt_layer in zip(best_model_iter.convs, model_iter.convs):
-                #         for src_encoder, tgt_encoder in zip(src_layer.encoder_group, tgt_layer.encoder_group):
-                #             tgt_encoder.load_state_dict(src_encoder.state_dict())
-
-                #         for src_decoder, tgt_decoder in zip(src_layer.decoder_group, tgt_layer.decoder_group):
-                #             tgt_decoder.load_state_dict(src_decoder.state_dict())
-                
                 optimizer = SGD(model_iter.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.args.weight_decay)
-                
                 self.stopper.reset()
                 self.update_train_data(out)
                 N = torch.sum(self.training_graph.pseudolabel>=0).item()
@@ -324,9 +362,12 @@ class Trainer:
         np.save(os.path.join(utils_data_pt, 'threshold_accuracy.npy'), threshold_accuracy_list)
         np.save(os.path.join(utils_data_pt, 'add_num.npy'), add_num_list)
         np.save(os.path.join(utils_data_pt, 'pseudo_loss.npy'), pseudo_loss_list)
+        np.save(os.path.join(utils_data_pt, 'edge_status.npy'), self.edge_status_list)
+        np.save(os.path.join(utils_data_pt, 'best_val_metric_list.npy'), best_val_metric_list)
         np.save(os.path.join(utils_data_pt, 'final_accuracy.npy'), np.array([self.best_test_metric.item()]))
         print(f'Final metric:{self.best_test_metric.item()}')
         np.save(os.path.join(utils_data_pt, 'pseudolabel_num.npy'), pseudolabel_num)
+        np.save(os.path.join(utils_data_pt, 'homo_edge_acc.npy'), homo_edge_acc)
         
         
         with open(os.path.join(utils_data_pt, 'setting.yaml'), 'w') as f:
@@ -407,7 +448,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     dataset = load_dataset(args.dataset)
-    utils_data_pt = f'./utils_data/1_stage_{args.model_name}_{args.dataset}_{args.mask_edge_flag if args.model_name == "ourModel" else ""}' 
+    utils_data_pt = f'./utils_data/3_stage_{args.model_name}_{args.dataset}_{args.mask_edge_flag if args.model_name == "ourModel" else ""}' 
     
     
     split_dataset(dataset, args.train_ratio, args.test_ratio, args.val_ratio)

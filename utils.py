@@ -71,9 +71,10 @@ def prepocessing(dataset):
         data[key] = graph[key]
     
     # identify homo and hetero edges
+    # data.y
     in_node_labels = data.y[data.edge_index[0,:]]
     out_node_labels = data.y[data.edge_index[1,:]]
-    data.homo_edge_flags = in_node_labels == out_node_labels
+    data.ground_truth_homo_edge_flags = in_node_labels == out_node_labels
     
     return data
 
