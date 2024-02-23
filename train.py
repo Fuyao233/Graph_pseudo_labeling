@@ -357,6 +357,12 @@ class Trainer:
         
         # while torch.sum(self.graph.pseudolabel==-1) > torch.sum(self.graph['val_index']):
         while torch.sum(self.graph.node_pseudolabel>=0) <= torch.sum(self.graph['unlabeled_index']) and iteration_count<=5:
+            if iteration_count>0 and epoch==0:
+                print(f'node_labels_pseudo_acc: {node_labels_pseudo_acc}')
+                print(f'node_labels_for_message_passing_acc: {node_labels_for_message_passing_acc}')
+                print(f'edge_acc: {edge_acc}')
+                print(f'node_labels_pseudo_acc: {node_labels_pseudo_acc}')
+            
             model_iter.train()
             
             # iteration untill all nodes included 

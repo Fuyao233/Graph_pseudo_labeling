@@ -340,6 +340,8 @@ class myGCNconv(GCNConv):
             start_idx = (sorted_antoencoder_indices == -1 ).nonzero(as_tuple=True)[0][0] 
             end_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][-1] + 1
             outputs.append(torch.zeros(((end_idx-start_idx), mlp_group[0].out_channel)).to(self.unlabeled_indices.device)) # add features of unlabeled nodes
+        
+        
         for mlp_idx in range(len(mlp_group)):
             match_indices = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0]
             start_idx = None 
@@ -362,8 +364,12 @@ class myGCNconv(GCNConv):
     def set_auto_encoder_loss_flag(self):
         self.auto_encoder_loss_flag = True
     
-    def forward(self, x: Tensor, edge_index,
-        edge_weight: OptTensor = None) -> Tensor:
+    def forward(self, graph):
+        self.graph = graph
+        self.node_labels_for_autoencoder_loss = graph.training_labels
+        self.node_labels_for_message_passing = graph.edge_pseudolabel
+        x = graph.x
+        
         self.add_self_loops = False
         if self.normalize:
             if isinstance(edge_index, Tensor):
@@ -408,6 +414,7 @@ class myGCNconv(GCNConv):
         
         out = self.update_node(x_clone, out)
         
+        self.graph = None
         if self.auto_encoder_loss_flag:
             self.auto_encoder_loss_flag = False
             return out, loss
@@ -420,11 +427,27 @@ class myGCNconv(GCNConv):
         else: 
             return F.relu(x+neighbor_feature)
     
+    def select_edge(self, inputs, index):
+        
+        edge_label = self.graph.edge_pseudolabel
+        propogated_confidence_from = self.graph.propogated_confidence_from
+        threshold = self.graph.edge_threshold
+        
+        select_edge_indicies = propogated_confidence_from>threshold
+        
+        new_inputs = inputs[select_edge_indicies]
+        new_index = index[select_edge_indicies]
+        
+        return new_inputs, new_index
+        
+    
     def aggregate(self, inputs, index, ptr, dim_size):
-        # TODO: 研究清楚propagate的过程，aggregate之前经历了什么
+        # TODO: 挑出每个节点接受的邻居
+        # 原则：每个节点都会接收；只接受阈值达标的；（待考虑）邻居阈值都不够就选top
         if len(inputs) == 0:
             return 
         else:
+            inputs, index = self.select_edge(self, inputs, index)
             inputs = self.decoder_forward(inputs, index)
             return scatter_mean(inputs, index, dim=0, dim_size=dim_size)
 
@@ -486,23 +509,22 @@ class ourModel(nn.Module):
     def forward(self,data,auto_encoder_loss_flag=False):
         # select autoencoder index
         node_labels_for_message_passing = data.edge_pseudolabel # for message passing
-        
         node_labels_for_autoencoder_loss = data.training_labels # for autoencoder loss
-        for conv in self.convs:
-            conv.set_node_labels_for_message_passing(node_labels_for_message_passing)
-            conv.set_node_labels_for_autoencoder_loss(node_labels_for_autoencoder_loss)
+        # for conv in self.convs:
+        #     conv.set_node_labels_for_message_passing(node_labels_for_message_passing)
+        #     conv.set_node_labels_for_autoencoder_loss(node_labels_for_autoencoder_loss)
         
-        x, adj_t =data.x, data.edge_index
+        # x, adj_t =data.x, data.edge_index
         auto_encoder_loss = None
         for conv, bn in zip(self.convs[:-1], self.bns):
             x1 = None
             if auto_encoder_loss_flag:
                 conv.set_auto_encoder_loss_flag()
-                x1, sub_auto_encoder_loss = conv(x, adj_t)
+                x1, sub_auto_encoder_loss = conv(x)
                 auto_encoder_loss = sub_auto_encoder_loss if auto_encoder_loss is None else auto_encoder_loss + sub_auto_encoder_loss
                     
             else:
-                x1 = conv(x, adj_t)
+                x1 = conv(x)
             # x1 = F.relu(bn(x1))
             x1 = bn(x1)
             if self.training:

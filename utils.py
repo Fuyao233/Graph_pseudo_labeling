@@ -74,6 +74,7 @@ import random
 from collections import defaultdict
 
 def split_dataset_balanced(dataset, train_ratio, test_ratio=None, val_ratio=None, unlabel_ratio=None):
+    # TODO:此处划分出来的数据集并非真正的类别不平衡，有待理解优化
     """
     Split the graph dataset into parts for node classification in a balanced manner.
     Args:

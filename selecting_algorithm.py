@@ -45,13 +45,21 @@ class Flexmatch:
         return res==1 # 'True' means selected sample 
     
     def select(self):
-        # TODO: 更新边标签和节点标签要分开
-        print(f'Node_threshold: {self.node_threshold}; Edge_threshold: {self.edge_threshold}')
+        # print(f'Node_threshold: {self.node_threshold}; Edge_threshold: {self.edge_threshold}')
+        print(f'Node_threshold: {self.node_threshold}')
+        self.graph.edge_threshold = self.node_threshold
         # naive, fixed threshold
         confidence, y_hat = self.prediction.max(dim=1)
 
+        self.graph.label_confidence = confidence.clone()
+        self.graph.label_confidence[self.graph.train_index] = 1.
+        self.graph.edge_pseudolabel = y_hat.clone()
+        self.graph.edge_pseudolabel[self.graph.train_index] = self.graph.y[self.graph.train_index].clone()
+        self.propogated_confidence_from = self.graph.label_confidence[self.graph.edge_index[0]]
+        self.propogated_confidence_to = self.graph.label_confidence[self.graph.edge.edge_index[1]]
+        
         node_unlabeled_index = (self.graph.unlabeled_index) * (self.graph.node_pseudolabel == -1)
-        edge_unlabeled_index = self.graph.edge_pseudolabel == -1
+        # edge_unlabeled_index = self.graph.edge_pseudolabel == -1
         
         # self.graph.pseudolabel[self.graph.pseudolabel>=0] = -1 # reset pseudolabels
         
@@ -60,14 +68,14 @@ class Flexmatch:
         
         for c in range(self.graph.num_class):
             selected_node_indices = torch.where(node_unlabeled_index*(y_hat==c)*(confidence>self.node_threshold))[0]
-            selected_edge_indices = torch.where(edge_unlabeled_index*(y_hat==c)*(confidence>self.edge_threshold))[0]
+            # selected_edge_indices = torch.where(edge_unlabeled_index*(y_hat==c)*(confidence>self.edge_threshold))[0]
             # selected_indices = initial_indices
             self.graph.node_pseudolabel[selected_node_indices] = c
-            self.graph.edge_pseudolabel[selected_edge_indices] = c
+            # self.graph.edge_pseudolabel[selected_edge_indices] = c
             
             # self.graph.val_index[selected_indices] = False # dynamically adjust validation set
             
-            edge_indices[selected_edge_indices] = True
+            # edge_indices[selected_edge_indices] = True
             node_indices[selected_node_indices] = True
         
         node_pseudo_label_acc = torch.mean((y_hat[node_indices] == self.graph.y[node_indices])*1.)
