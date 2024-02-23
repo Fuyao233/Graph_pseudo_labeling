@@ -8,7 +8,7 @@ from torch_geometric.utils import to_undirected
 import numpy as np
 
 from logger import SimpleLogger
-from dataset import load_nc_dataset
+from graph_level_dataset import load_nc_dataset
 from correct_smooth import double_correlation_autoscale, double_correlation_fixed
 from utils import normalize, gen_normalized_adjs
 from utils import evaluate, eval_acc, eval_rocauc, load_fixed_splits

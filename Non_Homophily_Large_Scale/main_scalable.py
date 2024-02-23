@@ -11,7 +11,7 @@ from torch_geometric.data import NeighborSampler, ClusterData, ClusterLoader, Da
 from torch_scatter import scatter
 
 from logger import Logger, SimpleLogger
-from dataset import load_nc_dataset, NCDataset
+from graph_level_dataset import load_nc_dataset, NCDataset
 from utils import normalize, gen_normalized_adjs, evaluate, eval_acc, eval_rocauc, to_sparse_tensor
 from parse import parse_method, parser_add_main_args
 from batch_utils import nc_dataset_to_torch_geo, torch_geo_to_nc_dataset, AdjRowLoader, make_loader

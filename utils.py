@@ -11,7 +11,14 @@ datanames = ['fb100']
 def load_dataset(name):
     return load_nc_dataset(name)
 
-def split_dataset(dataset, train_ratio, test_ratio=None, val_ratio=None):
+
+def directed_check(graph):
+    for i in range(10):
+        if not torch.sum(graph.edge_index[0]==i) == torch.sum(graph.edge_index[0]==i):
+            return False
+    return True
+
+def split_dataset(dataset, train_ratio, test_ratio=None, val_ratio=None, unlabel_ratio=None):
     """
         split the graph dataset into three parts for node classification
     Args:
@@ -19,16 +26,17 @@ def split_dataset(dataset, train_ratio, test_ratio=None, val_ratio=None):
         train_ratio
         test_ratio 
         val_ratio 
+        unlabel_ratio
     """
     if test_ratio is None:
         test_ratio = 1 - train_ratio
-    
-    if (train_ratio+test_ratio+(0 if val_ratio is None else val_ratio)) != 1:
-        raise ValueError("The sum of train_ratio, test_ratio, and val_ratio must be equal to 1.")
+
+    if (train_ratio+test_ratio+(0 if val_ratio is None else val_ratio))+((0 if unlabel_ratio is None else unlabel_ratio)) != 1:
+        raise ValueError("The sum of train_ratio, test_ratio, unlabel_ratio and val_ratio must be equal to 1.")
         
     for graph in dataset:
         N_nodes = graph[0]['num_nodes']
-        train_index, test_index, val_index = None, None, None
+        train_index, test_index, val_index, unlabeled_index = None, None, None, None
         if val_ratio is None:
             num_train = int(train_ratio*N_nodes)
             index = torch.zeros(N_nodes)
@@ -39,22 +47,106 @@ def split_dataset(dataset, train_ratio, test_ratio=None, val_ratio=None):
         else:
             num_train = int(train_ratio*N_nodes)
             num_val = int(val_ratio*N_nodes)
+            num_unlabeled = int(unlabel_ratio*N_nodes)
             index = torch.zeros(N_nodes)
             train_indices = random.sample(range(N_nodes), num_train)
             val_indices = random.sample(set(range(N_nodes)) - set(train_indices), num_val)
+            unlabeled_indices = random.sample(set(range(N_nodes)) - set(train_indices) - set(val_indices), num_unlabeled)
             index.view(-1)[train_indices] = 1
             index.view(-1)[val_indices] = 2
+            index.view(-1)[unlabeled_indices] = 3
             test_index = (index==0)
             train_index = (index==1)
             val_index = (index==2)
+            unlabeled_index = (index==3)
         graph[0]['train_index'] = train_index
         graph[0]['test_index'] = test_index
         graph[0]['val_index'] = val_index
+        graph[0]['unlabeled_index'] = unlabeled_index
 
         if len(dataset) == 1:
             break
             
         # graph['train_index']
+
+import torch
+import random
+from collections import defaultdict
+
+def split_dataset_balanced(dataset, train_ratio, test_ratio=None, val_ratio=None, unlabel_ratio=None):
+    """
+    Split the graph dataset into parts for node classification in a balanced manner.
+    Args:
+        dataset: Graph dataset.
+        train_ratio: Fraction of nodes to be used for training.
+        test_ratio: Fraction of nodes to be used for testing.
+        val_ratio: Fraction of nodes to be used for validation.
+        unlabel_ratio: Fraction of nodes to be used as unlabeled.
+    """
+    if test_ratio is None:
+        test_ratio = 1 - train_ratio - (0 if val_ratio is None else val_ratio) - (0 if unlabel_ratio is None else unlabel_ratio)
+    if val_ratio is None:
+        val_ratio = 0
+    if unlabel_ratio is None:
+        unlabel_ratio = 0
+
+    if not (0 < train_ratio < 1) or not (0 <= test_ratio <= 1) or not (0 <= val_ratio <= 1) or not (0 <= unlabel_ratio <= 1):
+        raise ValueError("All ratios must be between 0 and 1.")
+
+    if abs(train_ratio + test_ratio + val_ratio + unlabel_ratio - 1) > 1e-6:
+        raise ValueError("The sum of train_ratio, test_ratio, val_ratio, and unlabel_ratio must be equal to 1.")
+    
+    for graph in dataset:
+        N_nodes = graph[0]['num_nodes']
+        labels = dataset.label  
+        
+        # Create a dictionary to hold indices for each label
+        label_indices = defaultdict(list)
+        exclude_indices = []
+        for i, label in enumerate(labels):
+            if label.item() < 0:
+                exclude_indices.append(i)
+            label_indices[label.item()].append(i)
+        
+        train_index, test_index, val_index, unlabeled_index = [], [], [], []
+        
+        # Split indices for each label according to the specified ratios
+        for label, indices in label_indices.items():
+            random.shuffle(indices)
+            n_train = int(train_ratio * len(indices))
+            n_val = int(val_ratio * len(indices))
+            n_unlabeled = int(unlabel_ratio * len(indices))
+
+            train_index.extend(indices[:n_train])
+            val_index.extend(indices[n_train:n_train + n_val])
+            unlabeled_index.extend(indices[n_train + n_val:n_train + n_val + n_unlabeled])
+            test_index.extend(indices[n_train + n_val + n_unlabeled:])
+        
+        # Convert indices lists to boolean masks
+        total_index = torch.zeros(N_nodes, dtype=torch.bool)
+        total_index[train_index] = True
+        graph[0]['train_index'] = total_index.clone()
+        total_index.fill_(False)
+        total_index[test_index] = True
+        graph[0]['test_index'] = total_index.clone()
+        if val_ratio > 0:
+            total_index.fill_(False)
+            total_index[val_index] = True
+            graph[0]['val_index'] = total_index.clone()
+        if unlabel_ratio > 0:
+            total_index.fill_(False)
+            total_index[unlabeled_index] = True
+            graph[0]['unlabeled_index'] = total_index.clone()
+
+        graph[0]['train_index'][exclude_indices] = False
+        graph[0]['test_index'][exclude_indices] = False
+        graph[0]['val_index'][exclude_indices] = False
+        graph[0]['unlabeled_index'][exclude_indices] = False
+        
+        if len(dataset) == 1:
+            break
+
+
 
 def prepocessing(dataset):
     data = Data()
@@ -62,7 +154,9 @@ def prepocessing(dataset):
     label = dataset.label
     data.x = graph['node_feat']
     data.y = label
-    data.num_class = len(torch.unique(label))
+    
+    data.num_class = len(torch.unique(label[label>=0]))
+    
     # if 'pseudolabel' not in graph:
 
     for key in graph.keys():
@@ -102,6 +196,29 @@ def remove_edges(data, edge_indices):
 # def identify_hetero_indices(graph):
 #     pass 
 
+def enable_dropout(model):
+    for m in model.modules():
+        if m.__class__.__name__.startswith('Dropout'):
+            m.train()
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the precision@k for the specified values of k"""
+    maxk = max(topk)
+    batch_size = target.size(0)
+
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+    res = []
+    for k in topk:
+        correct_k = correct[:k].view(-1).float().sum(0)
+        try:
+            res.append(correct_k.mul_(100.0 / batch_size))
+        except:
+            res = (torch.tensor(0.0), torch.tensor(0.0))
+    return res
+
 def eval_rocauc(y_true, y_pred):
     """ adapted from ogb
     https://github.com/snap-stanford/ogb/blob/master/ogb/nodeproppred/evaluate.py"""
@@ -131,17 +248,17 @@ def eval_rocauc(y_true, y_pred):
 
 def cal_accuracy(labels, logits):
     y_hat = torch.argmax(logits, dim=1)
-    return torch.mean((y_hat==labels).float())
+    return torch.mean((y_hat==labels).float()).item()
 
 def cal_auc_score(labels, logits):
-    return roc_auc_score(labels.cpu().numpy(),torch.softmax(logits, dim=1)[:,1].cpu().detach().numpy()) 
+    return logits, roc_auc_score(labels.cpu().numpy(),torch.softmax(logits, dim=1)[:,1].cpu().detach().numpy()) 
 
 def accuracy_threshold(logits, graph, threshold):
     out_observe = torch.softmax(logits, dim=1)
     pred_prob, pred_y = torch.max(out_observe, dim=1)
-    pred_prob = pred_prob[graph.test_index*(graph.pseudolabel == -1)]
-    pred_y = pred_y[graph.test_index*(graph.pseudolabel == -1)]
-    labels = graph.y[graph.test_index*(graph.pseudolabel == -1)][pred_prob>threshold]
+    pred_prob = pred_prob[graph.node_pseudolabel == -1]
+    pred_y = pred_y[graph.node_pseudolabel == -1]
+    labels = graph.y[graph.node_pseudolabel == -1][pred_prob>threshold]
     pred_y = pred_y[pred_prob>threshold]
     threshold_accuracy = torch.mean((pred_y==labels)*1.)
     return threshold_accuracy, pred_y.size()

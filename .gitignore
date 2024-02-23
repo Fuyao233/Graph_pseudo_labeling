@@ -3,3 +3,6 @@
 /wandb/
 /data/
 /utils/data
+/utils_data
+/graph_level_dataset
+*.pt
