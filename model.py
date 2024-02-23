@@ -242,7 +242,7 @@ class myGCNconv_basis(GCNConv):
         if len(inputs) == 0:
             return 
         else:
-            inputs = self.decoder_forward(inputs, index)
+            inputs, index = self.decoder_forward(inputs, index)
             return scatter_mean(inputs, index, dim=0, dim_size=dim_size)
 
     def cal_autoencoder_loss(self, features):
