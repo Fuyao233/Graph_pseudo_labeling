@@ -74,7 +74,7 @@ class Trainer:
         self.initialize_training_labels()
         self.update_training_graph()
         
-        self.stopper = EarlyStopper(patience=100, max_iter=100)
+        self.stopper = EarlyStopper(max_iter=300)
     
     def eval(self, model, graph, keyword='test', metric='auc'):
         model.eval()
@@ -312,9 +312,13 @@ class Trainer:
         node_pseudolabel_indices = self.graph.node_pseudolabel >= 0
         node_labels_pseudo_acc = torch.sum(self.graph.node_pseudolabel[node_pseudolabel_indices]==self.graph.y[node_pseudolabel_indices]) / torch.sum(node_pseudolabel_indices)
         
-        edge_pseudolabel_acc = torch.sum(self.graph.edge_pseudolabel==self.graph.y) / torch.sum(self.graph.edge_pseudolabel>=0)
+        edge_pseudolabel_indices = self.graph.propogated_confidence_from>self.graph.edge_threshold
+        edge_pseudolabel = self.graph.edge_pseudolabel.clone()
+        edge_pseudolabel_indices[edge_pseudolabel_indices] = -1
+        n_edge_pseudolabel = torch.sum(edge_pseudolabel_indices)
+        # edge_pseudolabel_acc = torch.sum(self.graph.edge_pseudolabel==self.graph.y) / torch.sum(self.graph.edge_pseudolabel>=0)
         
-        edge_label_pred = torch.cat((self.graph.edge_pseudolabel[self.graph.edge_index[0,:]].unsqueeze(0), self.graph.edge_pseudolabel[self.graph.edge_index[1,:]].unsqueeze(0)), dim=0)
+        edge_label_pred = torch.cat((edge_pseudolabel[self.graph.edge_index[0,:]].unsqueeze(0), edge_pseudolabel[self.graph.edge_index[1,:]].unsqueeze(0)), dim=0)
         mask = (edge_label_pred != -1).all(dim=0)
         edge_label_pred = edge_label_pred[:, mask]
         edge_label_y = torch.cat((self.graph.y[self.graph.edge_index[0,:]].unsqueeze(0), self.graph.y[self.graph.edge_index[1,:]].unsqueeze(0)), dim=0)
@@ -322,7 +326,7 @@ class Trainer:
         edge_label_flag = edge_label_pred==edge_label_y
         edge_acc = torch.mean(torch.logical_and(edge_label_flag[0,:], edge_label_flag[1,:])*1.)
         
-        return node_labels_pseudo_acc, edge_pseudolabel_acc, edge_acc
+        return node_labels_pseudo_acc, n_edge_pseudolabel, edge_acc
         
     def train(self):
         model_iter = self.model 
@@ -348,7 +352,10 @@ class Trainer:
         pseudolabel_num = []
         best_val_metric_list = []
         homo_edge_acc = []
-        
+        node_labels_pseudo_acc_list = []
+        n_edge_pseudolabel_list = []
+        edge_acc_list = []
+        edge_label_list = []
         
         # record the best model between two labels additions
         best_model_iter = None 
@@ -357,11 +364,22 @@ class Trainer:
         
         # while torch.sum(self.graph.pseudolabel==-1) > torch.sum(self.graph['val_index']):
         while torch.sum(self.graph.node_pseudolabel>=0) <= torch.sum(self.graph['unlabeled_index']) and iteration_count<=5:
-            if iteration_count>0 and epoch==0:
+            if epoch==1:
+                print(type(model_iter))
+            
+            if iteration_count>0 and epoch==1:
+                
+                node_labels_pseudo_acc, n_edge_pseudolabel, edge_acc = self.cal_edge_node_accuracy()
+                
+                node_labels_pseudo_acc_list.append(node_labels_pseudo_acc.item())
+                n_edge_pseudolabel_list.append(n_edge_pseudolabel.item())
+                edge_acc_list.append(edge_acc.item())
+                
+                print('================================================================================')
+                print(f'Number of used edge: [{n_edge_pseudolabel}/{self.graph.edge_index.size()[1]}]')
+                print(f'Accuracy of used edge: {edge_acc}')
                 print(f'node_labels_pseudo_acc: {node_labels_pseudo_acc}')
-                print(f'node_labels_for_message_passing_acc: {node_labels_for_message_passing_acc}')
-                print(f'edge_acc: {edge_acc}')
-                print(f'node_labels_pseudo_acc: {node_labels_pseudo_acc}')
+                print('================================================================================')
             
             model_iter.train()
             
@@ -378,7 +396,7 @@ class Trainer:
             
             # calculate metric on validation data and training data
             metric = None 
-            self.metric = 'accuracy' if self.graph.num_class>2 else 'auc'
+            self.metric = 'accuracy' if (self.metric=='accuracy' or self.graph.num_class>2) else 'auc'
             if self.metric == 'accuracy':
                 metric = cal_accuracy(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
             elif self.metric == 'auc':
@@ -403,7 +421,7 @@ class Trainer:
             
             
             if self.stopper.early_stop(epoch, val_metric):
-                print(type(model_iter))
+                
                 iteration_count = iteration_count + 1
                 # self.edge_status_list.append(self.update_pipeline_flag)
                 # if self.update_pipeline_flag>=1:
@@ -468,6 +486,7 @@ class Trainer:
                 
                 # pseudolabeling
                 self.update_train_data(best_model_iter, iteration_count)
+                edge_label_list.append(self.graph.edge_pseudolabel.detach().cpu().numpy())
                 
                 # restart
                 epoch = 0
@@ -485,8 +504,8 @@ class Trainer:
                 # add_num_list.append(add_num_obs[0])
                 
                  
-                node_labels_pseudo_acc, node_labels_for_message_passing_acc, edge_acc = self.cal_edge_node_accuracy()
-                print(f'node_labels_pseudo_acc: {node_labels_pseudo_acc}, node_labels_for_message_passing_acc: {node_labels_for_message_passing_acc}, edge_acc: {edge_acc}\n')
+                # node_labels_pseudo_acc, node_labels_for_message_passing_acc, edge_acc = self.cal_edge_node_accuracy()
+                # print(f'node_labels_pseudo_acc: {node_labels_pseudo_acc}, node_labels_for_message_passing_acc: {node_labels_for_message_passing_acc}, edge_acc: {edge_acc}\n')
                 
 
                     
@@ -501,7 +520,8 @@ class Trainer:
         
         if not os.path.exists(utils_data_pt):
             os.mkdir(utils_data_pt)
-            
+        
+        np.save(os.path.join(utils_data_pt, 'y.npy'), graph.y.detach().cpu().numpy())
         np.save(os.path.join(utils_data_pt, 'loss.npy'), loss_list)
         np.save(os.path.join(utils_data_pt, 'metric.npy'), metric_list)
         np.save(os.path.join(utils_data_pt, 'val_metric.npy'), val_metric_list)
@@ -515,7 +535,10 @@ class Trainer:
         print(f'Final metric:{self.best_test_metric}')
         np.save(os.path.join(utils_data_pt, 'pseudolabel_num.npy'), pseudolabel_num)
         np.save(os.path.join(utils_data_pt, 'homo_edge_acc.npy'), homo_edge_acc)
-        
+        np.save(os.path.join(utils_data_pt, 'node_labels_pseudo_acc_list.npy'), node_labels_pseudo_acc_list)
+        np.save(os.path.join(utils_data_pt, 'n_edge_pseudolabel_list.npy'), n_edge_pseudolabel_list)
+        np.save(os.path.join(utils_data_pt, 'edge_acc_list.npy'), edge_acc_list)
+        np.save(os.path.join(utils_data_pt, 'edge_label_list.npy'), edge_label_list)
         
         with open(os.path.join(utils_data_pt, 'setting.yaml'), 'w') as f:
             yaml.dump(vars(args), f)
@@ -570,7 +593,7 @@ if __name__ == "__main__":
     
     # hyper-parameter
     # for autoencoder
-    parser.add_argument('--autoencoder_weight', type=float, default=0.1)
+    parser.add_argument('--autoencoder_weight', type=float, default=0.01)
     # parser.add_argument('--embedding_dim', type=float, default=10)
     # for train
     parser.add_argument('--warm_up', type=bool, default=True)
@@ -601,7 +624,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_layers', type=int, default=3)
     parser.add_argument('--dropout', type=float, default=0.3)
     # for optimizer
-    parser.add_argument('--lr', type=float, default=0.1)
+    parser.add_argument('--lr', type=float, default=0.05)
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--weight_decay', type=float, default=0.001)
     # parser.add_argument('--weight_decay', type=float, default=0.0005)
@@ -615,7 +638,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     dataset = load_dataset(args.dataset)
-    utils_data_pt = f'./utils_data/{args.model_name}1_{args.dataset}'
+    utils_data_pt = f'./utils_data/{args.model_name}_{args.edge_threshold}_{args.dataset}'
     
     
     split_dataset_balanced(dataset, args.train_ratio, args.test_ratio, args.val_ratio, args.unlabel_ratio)

@@ -254,6 +254,15 @@ def cal_accuracy(labels, logits):
 def cal_auc_score(labels, logits):
     return logits, roc_auc_score(labels.cpu().numpy(),torch.softmax(logits, dim=1)[:,1].cpu().detach().numpy()) 
 
+def cal_change_ratio(y, before, after):
+    right_indices = y==before 
+    woring_indices = y!=before
+    r_r = np.mean(after[right_indices] == y[right_indices])
+    r_w = 1 - r_r 
+    w_r = np.mean(after[right_indices] == y[right_indices])
+    w_w = 1 - w_r 
+    return r_r, r_w, w_r, w_w
+
 def accuracy_threshold(logits, graph, threshold):
     out_observe = torch.softmax(logits, dim=1)
     pred_prob, pred_y = torch.max(out_observe, dim=1)
@@ -278,7 +287,9 @@ class EarlyStopper:
         self.counter = 0
         self.acc_record = -np.inf
         self.loss = np.inf
-        
+    
+    
+    
     def early_stop(self, epoch_num, acc_record):
         """
             When epoch>max_iter or the number of times when acc_record>min_acc accumulate to self.patience
@@ -287,6 +298,7 @@ class EarlyStopper:
                 True: need to stop
                 False: continue
         """
+        # 多来几个epoch
         if acc_record > self.acc_record:
             self.epoch_counter=epoch_num
             self.acc_record = acc_record
@@ -295,11 +307,15 @@ class EarlyStopper:
         else:
             self.counter += 1
             if self.counter >= self.patience:
+                print("==========================================")
+                print(f'Number of training epochs: {epoch_num}')
+                print("==========================================")
                 return True
         
         
         
         if epoch_num >= self.max_iter:
+            print(f'\nNumber of training epochs: {epoch_num}\n')
             return True
         
         return False

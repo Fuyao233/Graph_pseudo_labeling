@@ -3,6 +3,7 @@ from torch_geometric.typing import OptTensor
 from Non_Homophily_Large_Scale.models import *
 from torch_scatter import scatter_mean
 import torch.nn.init as init
+from copy import deepcopy
 
 class basisAutoencoder(nn.Module):
     def __init__(self, basis) -> None:
@@ -368,7 +369,8 @@ class myGCNconv(GCNConv):
         self.graph = graph
         self.node_labels_for_autoencoder_loss = graph.training_labels
         self.node_labels_for_message_passing = graph.edge_pseudolabel
-        x = graph.x
+        
+        x, edge_index, edge_weight = graph.x, graph.edge_index, None
         
         self.add_self_loops = False
         if self.normalize:
@@ -447,7 +449,7 @@ class myGCNconv(GCNConv):
         if len(inputs) == 0:
             return 
         else:
-            inputs, index = self.select_edge(self, inputs, index)
+            inputs, index = self.select_edge(inputs, index)
             inputs = self.decoder_forward(inputs, index)
             return scatter_mean(inputs, index, dim=0, dim_size=dim_size)
 
@@ -516,6 +518,7 @@ class ourModel(nn.Module):
         
         # x, adj_t =data.x, data.edge_index
         auto_encoder_loss = None
+        x = deepcopy(data)
         for conv, bn in zip(self.convs[:-1], self.bns):
             x1 = None
             if auto_encoder_loss_flag:
@@ -524,12 +527,12 @@ class ourModel(nn.Module):
                 auto_encoder_loss = sub_auto_encoder_loss if auto_encoder_loss is None else auto_encoder_loss + sub_auto_encoder_loss
                     
             else:
-                x1 = conv(x)
+                x1 = conv(data)
             # x1 = F.relu(bn(x1))
             x1 = bn(x1)
             if self.training:
                 x1 = F.dropout(x1, p=self.dropout)
-            x = x1
+            x.x = x1
             
         
             
@@ -538,10 +541,10 @@ class ourModel(nn.Module):
         
         if auto_encoder_loss_flag:   
             self.convs[-1].set_auto_encoder_loss_flag()
-            x, sub_auto_encoder_loss = self.convs[-1](x, adj_t)
+            x, sub_auto_encoder_loss = self.convs[-1](data)
             auto_encoder_loss = auto_encoder_loss + sub_auto_encoder_loss
         else:
-            x = self.convs[-1](x, adj_t)
+            x = self.convs[-1](data)
         
         if auto_encoder_loss_flag:
             return x, auto_encoder_loss

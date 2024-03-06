@@ -47,16 +47,16 @@ class Flexmatch:
     def select(self):
         # print(f'Node_threshold: {self.node_threshold}; Edge_threshold: {self.edge_threshold}')
         print(f'Node_threshold: {self.node_threshold}')
-        self.graph.edge_threshold = self.node_threshold
-        # naive, fixed threshold
+        self.graph.edge_threshold = self.edge_threshold
+        # naive, fixed xthreshold
         confidence, y_hat = self.prediction.max(dim=1)
-
-        self.graph.label_confidence = confidence.clone()
+        
+        self.graph.label_confidence = confidence.detach().clone()
         self.graph.label_confidence[self.graph.train_index] = 1.
-        self.graph.edge_pseudolabel = y_hat.clone()
+        self.graph.edge_pseudolabel = y_hat.detach().clone()
         self.graph.edge_pseudolabel[self.graph.train_index] = self.graph.y[self.graph.train_index].clone()
-        self.propogated_confidence_from = self.graph.label_confidence[self.graph.edge_index[0]]
-        self.propogated_confidence_to = self.graph.label_confidence[self.graph.edge.edge_index[1]]
+        self.graph.propogated_confidence_from = self.graph.label_confidence[self.graph.edge_index[0]]
+        self.graph.propogated_confidence_to = self.graph.label_confidence[self.graph.edge_index[1]]
         
         node_unlabeled_index = (self.graph.unlabeled_index) * (self.graph.node_pseudolabel == -1)
         # edge_unlabeled_index = self.graph.edge_pseudolabel == -1
@@ -85,7 +85,7 @@ class Flexmatch:
             print(f'\nAdd no pseudo labels.\n')
         else:
             print(f'\nNumber of new node labels: {torch.sum(node_indices)}; Accuracy of pseudo node labels when selecting: {node_pseudo_label_acc.item()}\n')
-            print(f'\nNumber of new edge labels: {torch.sum(edge_indices)}; Accuracy of pseudo edge labels when selecting: {edge_pseudo_label_acc.item()}\n')
+            # print(f'\nNumber of new edge labels: {torch.sum(edge_indices)}; Accuracy of pseudo edge labels when selecting: {edge_pseudo_label_acc.item()}\n')
         
         
         # old method

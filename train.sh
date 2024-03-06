@@ -6,6 +6,8 @@ datasets=("yelp-chi" "deezer-europe" "pokec" "arxiv-year" "snap-patents" "chamel
 # 定义model_name参数列表
 model_names=("mlp" "GCN")
 
+
+
 # 遍历所有dataset
 for dataset in "${datasets[@]}"; do
     # 遍历所有model_name
