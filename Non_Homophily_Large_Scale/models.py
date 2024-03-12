@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_sparse import SparseTensor, matmul
-from torch_geometric.nn import GCNConv, SGConv, GATConv, JumpingKnowledge, APPNP, GCN2Conv, MessagePassing
+from torch_geometric.nn import GCNConv, SGConv, SAGEConv, GATConv, JumpingKnowledge, APPNP, GCN2Conv, MessagePassing
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 import numpy as np
 import scipy.sparse

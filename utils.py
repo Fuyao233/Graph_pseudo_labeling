@@ -73,8 +73,7 @@ import torch
 import random
 from collections import defaultdict
 
-def split_dataset_balanced(dataset, train_ratio, test_ratio=None, val_ratio=None, unlabel_ratio=None):
-    # TODO:此处划分出来的数据集并非真正的类别不平衡，有待理解优化
+def split_dataset_balanced(dataset, args):
     """
     Split the graph dataset into parts for node classification in a balanced manner.
     Args:
@@ -84,6 +83,14 @@ def split_dataset_balanced(dataset, train_ratio, test_ratio=None, val_ratio=None
         val_ratio: Fraction of nodes to be used for validation.
         unlabel_ratio: Fraction of nodes to be used as unlabeled.
     """
+    
+    # input and check
+    train_ratio = args.train_ratio if 'train_ratio' in args else None 
+    test_ratio = args.test_ratio if 'test_ratio' in args else None 
+    val_ratio = args.val_ratio if 'val_ratio' in args else None 
+    unlabel_ratio = args.unlabel_ratio if 'unlabel_ratio' in args else None 
+    train_A_B_ratio = args.A_B_ratio if 'A_B_ratio' in args else None
+    
     if test_ratio is None:
         test_ratio = 1 - train_ratio - (0 if val_ratio is None else val_ratio) - (0 if unlabel_ratio is None else unlabel_ratio)
     if val_ratio is None:
@@ -97,52 +104,55 @@ def split_dataset_balanced(dataset, train_ratio, test_ratio=None, val_ratio=None
     if abs(train_ratio + test_ratio + val_ratio + unlabel_ratio - 1) > 1e-6:
         raise ValueError("The sum of train_ratio, test_ratio, val_ratio, and unlabel_ratio must be equal to 1.")
     
+    
+    # split
     for graph in dataset:
         N_nodes = graph[0]['num_nodes']
         labels = dataset.label  
         
-        # Create a dictionary to hold indices for each label
-        label_indices = defaultdict(list)
-        exclude_indices = []
-        for i, label in enumerate(labels):
-            if label.item() < 0:
-                exclude_indices.append(i)
-            label_indices[label.item()].append(i)
+        N_train_A = int(N_nodes*train_ratio*train_A_B_ratio)
+        N_train_B = int(N_nodes*train_ratio*(1-train_A_B_ratio))
+        N_val = int(N_nodes*val_ratio)
+        N_test = int(N_nodes*test_ratio)
+        N_unlabeled = N_nodes-(N_train_A+N_train_B+N_val+N_test)
         
-        train_index, test_index, val_index, unlabeled_index = [], [], [], []
+        train_A_indices = torch.zeros_like(labels, dtype=bool)
+        train_B_indices = torch.zeros_like(labels, dtype=bool)
+        val_indices = torch.zeros_like(labels, dtype=bool)
+        test_indices = torch.zeros_like(labels, dtype=bool)
+        unlabeled_indices = torch.zeros_like(labels, dtype=bool)
         
-        # Split indices for each label according to the specified ratios
-        for label, indices in label_indices.items():
-            random.shuffle(indices)
-            n_train = int(train_ratio * len(indices))
-            n_val = int(val_ratio * len(indices))
-            n_unlabeled = int(unlabel_ratio * len(indices))
+        num_class = len(torch.unique(labels[labels>=0]))
+        for c in range(num_class):
+            indices = torch.where(labels==c)[0].numpy()
+            np.random.shuffle(indices)
+            train_A_indices[indices[:N_train_A//num_class]] = True
+            train_B_indices[indices[N_train_A//num_class:N_train_A//num_class+N_train_B//num_class]] = True
+        
+        train_indices = torch.logical_or(train_A_indices, train_B_indices).detach()
+        
+        # check balancy
+        n1_A = torch.sum(labels[train_A_indices]==1)
+        n1_B = torch.sum(labels[train_B_indices]==1)
+        n0_A = torch.sum(labels[train_A_indices]==0)
+        n0_B = torch.sum(labels[train_B_indices]==0)
+        
+        exclude_indices = torch.where(train_indices==False)[0]
+        rand_indices = torch.randperm(len(exclude_indices))
+        val_indices[exclude_indices[rand_indices[:N_val]]] = True 
+        test_indices[exclude_indices[rand_indices[N_val:N_val+N_test]]] = True
+        unlabeled_indices[exclude_indices[rand_indices[N_val+N_test:]]] = True
 
-            train_index.extend(indices[:n_train])
-            val_index.extend(indices[n_train:n_train + n_val])
-            unlabeled_index.extend(indices[n_train + n_val:n_train + n_val + n_unlabeled])
-            test_index.extend(indices[n_train + n_val + n_unlabeled:])
+        # check ratio
+        r_test = torch.sum(test_indices) / N_nodes
+        r_val = torch.sum(val_indices) / N_nodes
+        r_unlabeled = torch.sum(unlabeled_indices) / N_nodes
         
-        # Convert indices lists to boolean masks
-        total_index = torch.zeros(N_nodes, dtype=torch.bool)
-        total_index[train_index] = True
-        graph[0]['train_index'] = total_index.clone()
-        total_index.fill_(False)
-        total_index[test_index] = True
-        graph[0]['test_index'] = total_index.clone()
-        if val_ratio > 0:
-            total_index.fill_(False)
-            total_index[val_index] = True
-            graph[0]['val_index'] = total_index.clone()
-        if unlabel_ratio > 0:
-            total_index.fill_(False)
-            total_index[unlabeled_index] = True
-            graph[0]['unlabeled_index'] = total_index.clone()
-
-        graph[0]['train_index'][exclude_indices] = False
-        graph[0]['test_index'][exclude_indices] = False
-        graph[0]['val_index'][exclude_indices] = False
-        graph[0]['unlabeled_index'][exclude_indices] = False
+        graph[0]['train_index'] = train_indices
+        graph[0]['train_index_A'] = train_A_indices
+        graph[0]['train_index_B'] = train_B_indices
+        graph[0]['val_index'] = val_indices
+        graph[0]['test_index'] = test_indices
         
         if len(dataset) == 1:
             break
@@ -155,6 +165,9 @@ def prepocessing(dataset):
     label = dataset.label
     data.x = graph['node_feat']
     data.y = label
+    
+    if len(label.size()) > 1:
+        data.y = data.y.squeeze()
     
     data.num_class = len(torch.unique(label[label>=0]))
     

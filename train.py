@@ -138,6 +138,10 @@ class Trainer:
             Flexmatch(self.graph, prediction, self.node_threshold, self.edge_threshold, self.flex_batch).select()
             # UPS().select(self.args, self.graph, model, itr)
         
+        if args.upper_bound is True: 
+            self.graph.edge_pseudolabel = self.graph.y.clone()
+            self.graph.propogated_confidence_from.fill_(1)
+        
         self.update_training_labels()
         self.update_training_graph()
         
@@ -272,8 +276,11 @@ class Trainer:
                 out = model(graph)
             else:
                 out, autoencoder_loss = model(graph, auto_encoder_loss_flag=True)    
-                
-            groundtruth_loss = criterion(out[graph.train_index], graph.y[graph.train_index])
+            
+            if self.warm_up:    
+                groundtruth_loss = criterion(out[graph.train_index_A], graph.y[graph.train_index_A])
+            else:
+                groundtruth_loss = criterion(out[graph.train_index_B], graph.y[graph.train_index_B])
             loss = (groundtruth_loss + self.autoencoder_weight * autoencoder_loss) if autoencoder_loss is not None else groundtruth_loss
             
             if self.method == 'flexmatch' and torch.sum(graph.node_pseudolabel>=0) > 0: 
@@ -452,19 +459,13 @@ class Trainer:
                 best_val_metric_list.append(best_val_metric_iter)    
                 best_val_metric_iter = -torch.inf
                     
-               
-
-                    
                 # break 
                 # out = best_model_iter(graph_iter)
                 
                 # just for observation
                 threshold_accuracy, add_num_obs = accuracy_threshold(out, graph_iter, 0.9)
                 # threshold_accuracy_list.append(threshold_accuracy.item())
-                
-
-                
-                
+            
                 if self.warm_up:
                     # 如果涉及多轮重启则需要改动，此处默认使用最后一次的图
                     self.warm_up = False
@@ -486,6 +487,8 @@ class Trainer:
                 
                 # pseudolabeling
                 self.update_train_data(best_model_iter, iteration_count)
+                
+                
                 edge_label_list.append(self.graph.edge_pseudolabel.detach().cpu().numpy())
                 
                 # restart
@@ -586,22 +589,24 @@ def load_model(model_name, graph, args):
         assert model_name in ['mlp', 'ourModel', 'GCN']
 
 if __name__ == "__main__":
-
+    
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='yelp-chi')
+    parser.add_argument('--dataset', type=str, default='pokec')
     parser.add_argument('--gpu', type=int, default=4)
     
     # hyper-parameter
     # for autoencoder
-    parser.add_argument('--autoencoder_weight', type=float, default=0.01)
+    parser.add_argument('--autoencoder_weight', type=float, default=0)
     # parser.add_argument('--embedding_dim', type=float, default=10)
     # for train
     parser.add_argument('--warm_up', type=bool, default=True)
+    parser.add_argument('--upper_bound', type=bool, default=True)
+    parser.add_argument('--A_B_ratio', type=int, default=0.5)
     # parser.add_argument('--noise_rate', type=float, default=0.35)
     # for flexmatch
     parser.add_argument('--flex_batch', type=float, default=64)
     parser.add_argument('--flexmatch_weight', type=float, default=0.8)
-    parser.add_argument('--node_threshold', type=float, default=0.95)
+    parser.add_argument('--node_threshold', type=float, default=0.9)
     parser.add_argument('--edge_threshold', type=float, default=0.8)
     # for ups
     parser.add_argument('--no_uncertainty', type=bool, default=False)
@@ -612,10 +617,10 @@ if __name__ == "__main__":
     parser.add_argument('--tau_n', type=float, default=0.05)
     parser.add_argument('--class_blnc', type=int, default=3)
     # for dataset 
-    parser.add_argument('--train_ratio', type=float, default=0.2)
+    parser.add_argument('--train_ratio', type=float, default=0.4)
     parser.add_argument('--test_ratio', type=float, default=0.2)
     parser.add_argument('--val_ratio', type=float, default=0.2)
-    parser.add_argument('--unlabel_ratio', type=float, default=0.4)
+    parser.add_argument('--unlabel_ratio', type=float, default=0.2)
     parser.add_argument('--metric', type=str, default='auc')
     # for model
     parser.add_argument('--model_name', type=str, default='ourModel') # also the embedding dimension of encoder
@@ -638,16 +643,21 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     dataset = load_dataset(args.dataset)
-    utils_data_pt = f'./utils_data/{args.model_name}_{args.edge_threshold}_{args.dataset}'
+    utils_data_pt = f'./utils_data/{args.model_name}_{args.edge_threshold}_{args.dataset}' if not args.upper_bound else f'./utils_data/{args.model_name}_upperBound_{args.dataset}'
+    # utils_data_pt = f'./utils_data/{args.model_name}_decoupled_{args.dataset}' 
     
     
-    split_dataset_balanced(dataset, args.train_ratio, args.test_ratio, args.val_ratio, args.unlabel_ratio)
+    split_dataset_balanced(dataset, args)
     graph = prepocessing(dataset)
     
+    print("====================================================")
     if directed_check(graph):
         print("Undirected!")
     else:
         print('Directed!')
+    print(f'Dataset: {args.dataset}')
+    print(f'To test upper bound? {"Yes" if args.upper_bound else "No"}')
+    print("====================================================")
     
     model = load_model(args.model_name, graph, args)
     
