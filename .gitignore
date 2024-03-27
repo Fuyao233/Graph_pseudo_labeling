@@ -5,4 +5,5 @@
 /utils/data
 /utils_data
 /graph_level_dataset
+/imgs/
 *.pt

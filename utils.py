@@ -18,7 +18,7 @@ def directed_check(graph):
             return False
     return True
 
-def split_dataset(dataset, train_ratio, test_ratio=None, val_ratio=None, unlabel_ratio=None):
+def split_dataset(dataset, args):
     """
         split the graph dataset into three parts for node classification
     Args:
@@ -28,8 +28,11 @@ def split_dataset(dataset, train_ratio, test_ratio=None, val_ratio=None, unlabel
         val_ratio 
         unlabel_ratio
     """
-    if test_ratio is None:
-        test_ratio = 1 - train_ratio
+    train_ratio = args.train_ratio
+    train_ratio_A = args.A_B_ratio
+    test_ratio = args.test_ratio
+    val_ratio = args.val_ratio
+    unlabel_ratio = args.unlabel_ratio
 
     if (train_ratio+test_ratio+(0 if val_ratio is None else val_ratio))+((0 if unlabel_ratio is None else unlabel_ratio)) != 1:
         raise ValueError("The sum of train_ratio, test_ratio, unlabel_ratio and val_ratio must be equal to 1.")
@@ -46,6 +49,8 @@ def split_dataset(dataset, train_ratio, test_ratio=None, val_ratio=None, unlabel
             test_index = (index!=1)
         else:
             num_train = int(train_ratio*N_nodes)
+            num_train_A = int(num_train*train_ratio_A)
+            num_train_B = num_train-num_train_A
             num_val = int(val_ratio*N_nodes)
             num_unlabeled = int(unlabel_ratio*N_nodes)
             index = torch.zeros(N_nodes)
@@ -84,6 +89,8 @@ def split_dataset_balanced(dataset, args):
         unlabel_ratio: Fraction of nodes to be used as unlabeled.
     """
     
+    balanced_flag = args.dataset_balanced
+    
     # input and check
     train_ratio = args.train_ratio if 'train_ratio' in args else None 
     test_ratio = args.test_ratio if 'test_ratio' in args else None 
@@ -118,26 +125,37 @@ def split_dataset_balanced(dataset, args):
         
         train_A_indices = torch.zeros_like(labels, dtype=bool)
         train_B_indices = torch.zeros_like(labels, dtype=bool)
+        train_indices = torch.zeros_like(labels, dtype=bool)
         val_indices = torch.zeros_like(labels, dtype=bool)
         test_indices = torch.zeros_like(labels, dtype=bool)
         unlabeled_indices = torch.zeros_like(labels, dtype=bool)
         
         num_class = len(torch.unique(labels[labels>=0]))
-        for c in range(num_class):
-            indices = torch.where(labels==c)[0].numpy()
+        if balanced_flag:    
+            for c in range(num_class):
+                indices = torch.where(labels==c)[0].numpy()
+                np.random.shuffle(indices)
+                # train_indices[indices[:(N_train_A+N_train_B)//num_class]]= True 
+                
+                train_A_indices[indices[:N_train_A//num_class]] = True
+                train_B_indices[indices[N_train_A//num_class:N_train_A//num_class+N_train_B//num_class]] = True
+        else:
+            indices = torch.where(labels>=0)[0].numpy()
             np.random.shuffle(indices)
-            train_A_indices[indices[:N_train_A//num_class]] = True
-            train_B_indices[indices[N_train_A//num_class:N_train_A//num_class+N_train_B//num_class]] = True
+            # train_indices[indices[:N_train_A+N_train_B]] = True
+            
+            train_A_indices[indices[:N_train_A]] = True
+            train_B_indices[indices[N_train_A:N_train_A+N_train_B]] = True
         
         train_indices = torch.logical_or(train_A_indices, train_B_indices).detach()
         
         # check balancy
-        n1_A = torch.sum(labels[train_A_indices]==1)
+        n1_A = torch.sum(labels[train_indices]==1)
         n1_B = torch.sum(labels[train_B_indices]==1)
         n0_A = torch.sum(labels[train_A_indices]==0)
         n0_B = torch.sum(labels[train_B_indices]==0)
         
-        exclude_indices = torch.where(train_indices==False)[0]
+        exclude_indices = torch.where((train_indices==False) & (labels>=0))[0]
         rand_indices = torch.randperm(len(exclude_indices))
         val_indices[exclude_indices[rand_indices[:N_val]]] = True 
         test_indices[exclude_indices[rand_indices[N_val:N_val+N_test]]] = True
@@ -153,10 +171,10 @@ def split_dataset_balanced(dataset, args):
         graph[0]['train_index_B'] = train_B_indices
         graph[0]['val_index'] = val_indices
         graph[0]['test_index'] = test_indices
+        graph[0]['unlabeled_index'] = unlabeled_indices
         
         if len(dataset) == 1:
             break
-
 
 
 def prepocessing(dataset):
@@ -201,14 +219,6 @@ def remove_edges(data, edge_indices):
     if data.edge_attr is not None:
         data.edge_attr = data.edge_attr[mask]
     return data
-
-# def identify_homo_indices(graph):
-#     for i in range(graph.num_class):
-#         homo_edge_indices = torch.logical_and(torch.graph.training_labels == i
-#     pass 
-
-# def identify_hetero_indices(graph):
-#     pass 
 
 def enable_dropout(model):
     for m in model.modules():
@@ -258,8 +268,6 @@ def eval_rocauc(y_true, y_pred):
 
     return sum(rocauc_list)/len(rocauc_list)
 
-
-
 def cal_accuracy(labels, logits):
     y_hat = torch.argmax(logits, dim=1)
     return torch.mean((y_hat==labels).float()).item()
@@ -268,13 +276,21 @@ def cal_auc_score(labels, logits):
     return logits, roc_auc_score(labels.cpu().numpy(),torch.softmax(logits, dim=1)[:,1].cpu().detach().numpy()) 
 
 def cal_change_ratio(y, before, after):
+    # w: wrong; r: right
     right_indices = y==before 
-    woring_indices = y!=before
+    wrong_indices = y!=before
     r_r = np.mean(after[right_indices] == y[right_indices])
     r_w = 1 - r_r 
-    w_r = np.mean(after[right_indices] == y[right_indices])
+    w_r = np.mean(after[wrong_indices] == y[wrong_indices])
     w_w = 1 - w_r 
-    return r_r, r_w, w_r, w_w
+    return {'r_r': r_r, 
+            'r_r_n': np.sum(after[right_indices] == y[right_indices]),
+            'r_w': r_w, 
+            'r_w_n': np.sum(after[right_indices] != y[right_indices]),
+            'w_r': w_r,
+            'w_r_n': np.sum(after[wrong_indices] == y[wrong_indices]),
+            'w_w': w_w, 
+            'w_w_n': np.sum(after[wrong_indices] != y[wrong_indices]),}
 
 def accuracy_threshold(logits, graph, threshold):
     out_observe = torch.softmax(logits, dim=1)
@@ -287,7 +303,7 @@ def accuracy_threshold(logits, graph, threshold):
     return threshold_accuracy, pred_y.size()
 
 class EarlyStopper:
-    def __init__(self, patience=20, min_delta=0.01, max_iter=200):
+    def __init__(self, patience=50, min_delta=0.01, max_iter=200):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0

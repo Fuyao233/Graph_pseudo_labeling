@@ -10,12 +10,13 @@ from tqdm import tqdm
 from utils import enable_dropout, accuracy
 
 class Flexmatch:
-    def __init__(self, graph, prediction, node_threshold, edge_threshold, batch_size):
+    def __init__(self, graph, prediction, node_threshold, edge_threshold, batch_size, warm_up):
         self.graph = graph
         self.prediction = prediction
         self.node_threshold = node_threshold 
         self.edge_threshold = edge_threshold 
         self.batch_size = batch_size
+        self.warm_up = warm_up
 
     def is_warm_up(self):
         warm_up_flags = torch.zeros(self.graph.num_class)
@@ -50,33 +51,37 @@ class Flexmatch:
         self.graph.edge_threshold = self.edge_threshold
         # naive, fixed xthreshold
         confidence, y_hat = self.prediction.max(dim=1)
+        self.graph.full_confidence = torch.softmax(self.prediction, dim=1).detach()
         
         self.graph.label_confidence = confidence.detach().clone()
-        self.graph.label_confidence[self.graph.train_index] = 1.
+        self.graph.label_confidence[self.graph.train_index_A] = 1.
         self.graph.edge_pseudolabel = y_hat.detach().clone()
-        self.graph.edge_pseudolabel[self.graph.train_index] = self.graph.y[self.graph.train_index].clone()
+        self.graph.edge_pseudolabel[self.graph.train_index_A] = self.graph.y[self.graph.train_index_A].clone() # edge pseudolabel = y_hat + train_index_A
         self.graph.propogated_confidence_from = self.graph.label_confidence[self.graph.edge_index[0]]
         self.graph.propogated_confidence_to = self.graph.label_confidence[self.graph.edge_index[1]]
         
-        node_unlabeled_index = (self.graph.unlabeled_index) * (self.graph.node_pseudolabel == -1)
-        # edge_unlabeled_index = self.graph.edge_pseudolabel == -1
-        
-        # self.graph.pseudolabel[self.graph.pseudolabel>=0] = -1 # reset pseudolabels
+        node_unlabeled_index = (self.graph.unlabeled_index) * (self.graph.node_pseudolabel == -1) # TODO: node_pseudolabel 数量非减吗？待验证
         
         node_indices = torch.zeros_like(self.graph.y)==1
         edge_indices = torch.zeros_like(self.graph.y)==1
         
         for c in range(self.graph.num_class):
             selected_node_indices = torch.where(node_unlabeled_index*(y_hat==c)*(confidence>self.node_threshold))[0]
-            # selected_edge_indices = torch.where(edge_unlabeled_index*(y_hat==c)*(confidence>self.edge_threshold))[0]
-            # selected_indices = initial_indices
             self.graph.node_pseudolabel[selected_node_indices] = c
-            # self.graph.edge_pseudolabel[selected_edge_indices] = c
-            
-            # self.graph.val_index[selected_indices] = False # dynamically adjust validation set
-            
-            # edge_indices[selected_edge_indices] = True
             node_indices[selected_node_indices] = True
+        
+        # set all node_pseudolabel as part of train_index_A
+        # self.graph.label_confidence[node_indices] = 1.
+        
+        # split node_pseudolabel (based on the last iteration)
+        if 'node_pseudolabel_indices_A' not in self.graph:
+            self.graph.node_pseudolabel_indices_A = torch.zeros_like(self.graph.node_pseudolabel, dtype=bool)
+            self.graph.node_pseudolabel_indices_B = torch.zeros_like(self.graph.node_pseudolabel, dtype=bool)
+        # node_pseudolabel_indices = torch.where(self.graph.node_pseudolabel>=0)[0]
+        # random_indices = torch.randperm(len(node_pseudolabel_indices))
+        # self.graph.node_pseudolabel_indices_A[node_pseudolabel_indices[random_indices[:len(node_pseudolabel_indices)//2]]] = True 
+        # self.graph.label_confidence[self.graph.node_pseudolabel_indices_A] = 1.
+        # self.graph.node_pseudolabel_indices_B[node_pseudolabel_indices[random_indices[len(node_pseudolabel_indices)//2:]]] = True 
         
         node_pseudo_label_acc = torch.mean((y_hat[node_indices] == self.graph.y[node_indices])*1.)
         edge_pseudo_label_acc = torch.mean((y_hat[edge_indices] == self.graph.y[edge_indices])*1.)

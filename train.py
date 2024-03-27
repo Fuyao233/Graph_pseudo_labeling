@@ -71,7 +71,7 @@ class Trainer:
         # self.update_autoencoder_prob()
         # print(self.graph.autoencoder_prob)
         # self.update_pipeline_flag = 0
-        self.initialize_training_labels()
+        # self.initialize_training_labels()
         self.update_training_graph()
         
         self.stopper = EarlyStopper(max_iter=300)
@@ -111,10 +111,14 @@ class Trainer:
             # status stage changes
             # use the graph achieving the best metric
             self.training_graph.train_index = self.best_graph.train_index.clone()
+            self.training_graph.train_index_A = self.best_graph.train_index_A.clone()
+            self.training_graph.train_index_B = self.best_graph.train_index_B.clone()
             self.training_graph.test_index = self.best_graph.test_index.clone()
             self.training_graph.val_index = self.best_graph.val_index.clone()
             self.training_graph.training_labels = self.best_graph.training_labels.clone()
             self.training_graph.node_pseudolabel = self.best_graph.node_pseudolabel.clone()
+            self.training_graph.node_pseudolabel_indices_A = self.best_graph.node_pseudolabel_indices_A.clone()
+            self.training_graph.node_pseudolabel_indices_B = self.best_graph.node_pseudolabel_indices_B.clone()
             self.training_graph.edge_pseudolabel = self.best_graph.edge_pseudolabel.clone()
             self.training_graph.homo_edge_flags = self.best_graph.homo_edge_flags.clone()
             self.training_graph.detected_edge_flags = self.best_graph.detected_edge_flags.clone()
@@ -123,10 +127,11 @@ class Trainer:
         # True denotes homo edge (under groudtruth and pseudo labels)
         # False denotes unknow, they may be homo(undetected) or heterophily
         
-        in_node_labels = self.training_graph.training_labels[[self.training_graph.edge_index[0,:]]]
-        out_node_labels = self.training_graph.training_labels[[self.training_graph.edge_index[1,:]]]
-        self.training_graph.homo_edge_flags = torch.logical_and(in_node_labels == out_node_labels, torch.logical_and((in_node_labels>=0), (out_node_labels>=0)))
-        self.training_graph.detected_edge_flags = torch.logical_and((in_node_labels>=0), (out_node_labels>=0))
+        # in_node_labels = self.training_graph.training_labels[[self.training_graph.edge_index[0,:]]]
+        # out_node_labels = self.training_graph.training_labels[[self.training_graph.edge_index[1,:]]]
+        # self.training_graph.homo_edge_flags = torch.logical_and(in_node_labels == out_node_labels, torch.logical_and((in_node_labels>=0), (out_node_labels>=0)))
+        # self.training_graph.detected_edge_flags = torch.logical_and((in_node_labels>=0), (out_node_labels>=0))
+        pass
 
     def update_train_data(self, model, itr):
         prediction = torch.softmax(model(self.graph), dim=1)
@@ -135,14 +140,14 @@ class Trainer:
             # Flexmatch(self.graph, prediction, self.fixed_threshold if self.update_pipeline_flag-1==0 else self.fixed_threshold*self.fixed_threshold, self.flex_batch).select()
             
             # fixed threshold
-            Flexmatch(self.graph, prediction, self.node_threshold, self.edge_threshold, self.flex_batch).select()
+            Flexmatch(self.graph, prediction, self.node_threshold, self.edge_threshold, self.flex_batch, self.warm_up).select()
             # UPS().select(self.args, self.graph, model, itr)
         
         if args.upper_bound is True: 
             self.graph.edge_pseudolabel = self.graph.y.clone()
             self.graph.propogated_confidence_from.fill_(1)
         
-        self.update_training_labels()
+        # self.update_training_labels()
         self.update_training_graph()
         
         self.global_iteration = self.global_iteration+1    
@@ -205,7 +210,6 @@ class Trainer:
         # self.graph.pseudolabels_for_message_passing = pseudolabels_for_message_passing.clone().detach()
         # self.graph.pseudolabels_for_message_passing[self.graph['train_index']] = self.graph.y[self.graph['train_index']]
 
-        
     def update_training_graph(self):
         """
             produce training graph according to self.graph 
@@ -223,12 +227,12 @@ class Trainer:
                 
                 - node_pseudolabel(size=num_nodes): '-2' means unavailable data, '-1' means unlabeled data
                 - edge_pseudolabel(size=num_nodes):  '-1' means unlabeled data
-                - training_labels(size=num_nodes): -1 denotes unlabeled, x(x>=0) denotes pseudolabels (training_labels=pseudolabel+train_index)
-                - label_confidence(size=num_nodes): confidence of model 
+                - training_labels(size=num_nodes): -1 denotes unlabeled, x(x>=0) denotes pseudolabels (training_labels=pseudolabel+train_index)(abandoned)
+                - label_confidence(size=num_nodes): confidence of label 
                 - pseudolabels_for_message_passing(size=num_nodes): prediction of all nodes(just for message passing but not for pseudolabel loss)（abandoned）
-                - ground_truth_homo_edge_flags(size=edge_index): True denotes homo edge, False denotes hetero edge
-                - homo_edge_flags(size=edge_index): 检测出来的homo edge（TODO:待细分，homo_edge有1->1也有0->0）
-                - detected_edge_flags(size=edge_index): 检测出来的edge, True denotes two ends have been pseudolabels or training labels
+                - ground_truth_homo_edge_flags(size=edge_index): True denotes homo edge, False denotes hetero edge (abandoned)
+                - homo_edge_flags(size=edge_index): 检测出来的homo edge（abandoned）
+                - detected_edge_flags(size=edge_index): 检测出来的edge, True denotes two ends have been pseudolabels or training labels(abandoned)
             
         """
         self.training_graph = deepcopy(self.graph)
@@ -281,10 +285,11 @@ class Trainer:
                 groundtruth_loss = criterion(out[graph.train_index_A], graph.y[graph.train_index_A])
             else:
                 groundtruth_loss = criterion(out[graph.train_index_B], graph.y[graph.train_index_B])
+                
             loss = (groundtruth_loss + self.autoencoder_weight * autoencoder_loss) if autoencoder_loss is not None else groundtruth_loss
             
             if self.method == 'flexmatch' and torch.sum(graph.node_pseudolabel>=0) > 0: 
-                pseudolabel_index = graph.node_pseudolabel >= 0
+                pseudolabel_index = graph.node_pseudolabel>=0
                 pseudolabel_loss = criterion(out[pseudolabel_index], graph.node_pseudolabel[pseudolabel_index])
                 record[1].append(pseudolabel_loss.item())
                 loss = loss + self.flexmatch_weight*pseudolabel_loss       
@@ -338,7 +343,7 @@ class Trainer:
     def train(self):
         model_iter = self.model 
         graph_iter = self.training_graph 
-        optimizer = SGD(model_iter.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay)
+        optimizer = Adam(model_iter.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         # scheduler = 
         criterion = nn.CrossEntropyLoss()
         
@@ -396,7 +401,7 @@ class Trainer:
             # calculate the loss
             optimizer.zero_grad()
             out, loss = self.cal_loss(model_name=self.model_name, model=model_iter, graph=graph_iter, criterion=criterion, record=[loss_list, pseudo_loss_list])
-
+            
             loss.backward()
             optimizer.step()
             # loss_list.append([groundtruth_loss.item(), 0])
@@ -404,14 +409,25 @@ class Trainer:
             # calculate metric on validation data and training data
             metric = None 
             self.metric = 'accuracy' if (self.metric=='accuracy' or self.graph.num_class>2) else 'auc'
-            if self.metric == 'accuracy':
-                metric = cal_accuracy(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
-            elif self.metric == 'auc':
-                pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
-            
+            if self.model_name == 'ourModel' and self.metric == 'accuracy':
+                if self.warm_up:
+                    metric = cal_accuracy(graph_iter.y[graph_iter.train_index_A], out[graph_iter.train_index_A])
+                else:
+                    metric = cal_accuracy(graph_iter.y[graph_iter.train_index_B], out[graph_iter.train_index_B])
+            elif self.model_name == 'ourModel' and self.metric == 'auc':
+                if self.warm_up:
+                    pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index_A], out[graph_iter.train_index_A])
+                else:
+                    pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index_B], out[graph_iter.train_index_B])
+            else:
+                if self.metric == 'accuracy':
+                    metric = cal_accuracy(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
+                else:
+                    pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
+                    
             metric_list.append(metric)
             pseudolabel_num.append(torch.sum(graph_iter.node_pseudolabel >= 0).item())
-
+            
             val_pred_logits, val_metric = self.eval(model_iter, graph_iter, keyword='val', metric=self.metric)
             test_pred_logits, test_metric = self.eval(model_iter, graph_iter, keyword='test', metric=self.metric)
             val_metric_list.append(val_metric)
@@ -430,13 +446,7 @@ class Trainer:
             if self.stopper.early_stop(epoch, val_metric):
                 
                 iteration_count = iteration_count + 1
-                # self.edge_status_list.append(self.update_pipeline_flag)
-                # if self.update_pipeline_flag>=1:
-                #     in_node_labels = graph_iter.pseudolabel[graph_iter.edge_index[0,:]]
-                #     out_node_labels = graph_iter.pseudolabel[graph_iter.edge_index[1,:]]
-                #     detected_homo_flags = torch.logical_and(in_node_labels>=0, out_node_labels>=0)
-                #     homo_edge_acc.append(torch.mean((graph_iter.homo_edge_flags[detected_homo_flags]==graph_iter.ground_truth_homo_edge_flags[detected_homo_flags])==1).item())
-                #     print(f'Homo edge acc:{homo_edge_acc}')
+
                 print(f'\nBest val metric:{best_val_metric_iter}')
                 print(f'Best test metric:{best_test_metric_iter}')
                 print(f'Is warm up? {self.warm_up}')
@@ -448,39 +458,13 @@ class Trainer:
                     self.best_model = deepcopy(best_model_iter)
                     self.best_graph = deepcopy(graph_iter)
                     self.best_training_num_record = N 
-                # else:
-                #     # update stage
-                #     if np.sum(np.array(self.edge_status_list)==self.update_pipeline_flag)>2 and best_val_metric_iter-best_val_metric_list[-1] < self.update_stage_threshold and best_val_metric_iter-best_val_metric_list[-2] < self.update_stage_threshold:
-                #         self.update_pipeline_flag = self.update_pipeline_flag + 1
-                        
-                #     if self.update_pipeline_flag>2:
-                #         break
+
                     
                 best_val_metric_list.append(best_val_metric_iter)    
                 best_val_metric_iter = -torch.inf
                     
                 # break 
-                # out = best_model_iter(graph_iter)
-                
-                # just for observation
-                threshold_accuracy, add_num_obs = accuracy_threshold(out, graph_iter, 0.9)
-                # threshold_accuracy_list.append(threshold_accuracy.item())
-            
-                if self.warm_up:
-                    # 如果涉及多轮重启则需要改动，此处默认使用最后一次的图
-                    self.warm_up = False
-                else:
-                    # with open('performance_noise.txt', '+a') as f:
-                    #     node_labels_pseudo_acc, node_labels_for_message_passing_acc, edge_acc = self.cal_edge_node_accuracy()
-                    #     f.write(f'{self.args.noise_rate}\t{node_labels_pseudo_acc}\t{node_labels_for_message_passing_acc}\t{edge_acc}\t{best_test_metric_iter}\n')
-                    
-                    # with open(f'utils_data/noise_test/n_{self.args.noise_rate}_graph.pkl', 'wb') as f:
-                    #     pickle.dump(self.best_graph, f)
-                        
-                    # with open(f'utils_data/noise_test/n_{self.args.noise_rate}_pred.pkl', 'wb') as f:
-                    #     pickle.dump(best_test_pred_logits, f)
-                    # break
-                    pass
+                # out = best_model_iter(graph_iter)  
                 
                 if self.model_name == 'mlp' or self.model_name == 'GCN':
                     break    
@@ -488,6 +472,11 @@ class Trainer:
                 # pseudolabeling
                 self.update_train_data(best_model_iter, iteration_count)
                 
+                if self.warm_up:
+                    # 如果涉及多轮重启则需要改动，此处默认使用最后一次的图
+                    self.warm_up = False
+                else:
+                    pass
                 
                 edge_label_list.append(self.graph.edge_pseudolabel.detach().cpu().numpy())
                 
@@ -547,6 +536,80 @@ class Trainer:
             yaml.dump(vars(args), f)
     
         return self.best_test_metric
+    
+    def vote_to_split(self):
+        
+        
+        device = torch.cuda.current_device()
+        graph = self.training_graph
+        graph.to(device)
+
+        assert torch.sum(graph.train_index_A) == 0
+        
+        features = self.training_graph.x[self.training_graph.train_index] 
+        labels = self.training_graph.y[self.training_graph.train_index] 
+        initial_indices = torch.where(self.training_graph.train_index==True)
+        hard_vote_record = torch.zeros_like(self.training_graph.y)
+        easy_vote_record = torch.zeros_like(self.training_graph.y)
+        
+        easy_threshold = 0.85
+        
+        for _ in range(15):
+            vote_model = load_model('mlp', self.graph, self.args)
+            vote_model.to(device)
+            vote_model.train()
+            optimizer = Adam(vote_model.parameters(), lr=self.lr, weight_decay=self.weight_decay) 
+            criterion = nn.CrossEntropyLoss()
+            
+            # split
+            train_indices = torch.where(graph.train_index==True)[0]
+            random_train_indices = train_indices[torch.randperm(len(train_indices))]
+            train_indices_vote = random_train_indices[:len(train_indices)//2]
+            test_indices_vote = random_train_indices[len(train_indices)//2:]
+            
+            
+            best_val_metric = -torch.inf
+            best_test_confidence, best_test_pred = None, None
+            
+            for epoch in range(200):
+                
+                optimizer.zero_grad()
+                out = vote_model(graph)
+                loss = criterion(out[train_indices_vote], graph.y[train_indices_vote])
+                
+                loss.backward()
+                optimizer.step()
+                
+                metric = cal_accuracy(graph.y[train_indices_vote], out[train_indices_vote])
+                _, val_metric = self.eval(vote_model, graph, 'val', 'accuracy')
+                
+                if val_metric > best_val_metric:
+                    best_val_metric = val_metric
+                    pred_test = torch.softmax(out[test_indices_vote], dim=1)
+                    best_test_confidence, best_test_pred = torch.max(pred_test, dim=1)
+            
+            right_indices = graph.y[test_indices_vote]==best_test_pred
+            _, tmp_indices = torch.topk(best_test_confidence, int(len(best_test_confidence)*0.8))
+            confident_indices = torch.zeros_like(right_indices, dtype=bool)
+            confident_indices[tmp_indices] = True 
+            
+            easy_indices = torch.logical_and(right_indices, confident_indices)
+            hard_indices = torch.logical_and(torch.logical_not(right_indices), confident_indices)
+            easy_vote_record[test_indices_vote[easy_indices]] = easy_vote_record[test_indices_vote[easy_indices]] + 1
+            hard_vote_record[test_indices_vote[hard_indices]] = hard_vote_record[test_indices_vote[hard_indices]] + 1
+
+        
+        total_vote = hard_vote_record[graph.train_index] - easy_vote_record[graph.train_index] 
+        bar = total_vote.median()
+        final_easy_indices = torch.where(total_vote<=bar)[0]
+        final_hard_indices = torch.where(total_vote>bar)[0]
+
+        # A-easy, B-hard
+        self.training_graph.train_index_B[final_easy_indices] = True 
+        self.graph.train_index_B[final_easy_indices] = True 
+        self.training_graph.train_index_A[final_hard_indices] = True 
+        self.graph.train_index_A[final_hard_indices] = True 
+        
             
 def save_res(acc, data_name, root='res/baselines.csv'):
     df = None
@@ -591,21 +654,21 @@ def load_model(model_name, graph, args):
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='pokec')
+    parser.add_argument('--dataset', type=str, default='yelp-chi')
     parser.add_argument('--gpu', type=int, default=4)
     
     # hyper-parameter
     # for autoencoder
-    parser.add_argument('--autoencoder_weight', type=float, default=0)
+    parser.add_argument('--autoencoder_weight', type=float, default=0.01)
     # parser.add_argument('--embedding_dim', type=float, default=10)
     # for train
     parser.add_argument('--warm_up', type=bool, default=True)
-    parser.add_argument('--upper_bound', type=bool, default=True)
+    parser.add_argument('--upper_bound', type=bool, default=False)
     parser.add_argument('--A_B_ratio', type=int, default=0.5)
     # parser.add_argument('--noise_rate', type=float, default=0.35)
     # for flexmatch
     parser.add_argument('--flex_batch', type=float, default=64)
-    parser.add_argument('--flexmatch_weight', type=float, default=0.8)
+    parser.add_argument('--flexmatch_weight', type=float, default=0.6)
     parser.add_argument('--node_threshold', type=float, default=0.9)
     parser.add_argument('--edge_threshold', type=float, default=0.8)
     # for ups
@@ -617,11 +680,13 @@ if __name__ == "__main__":
     parser.add_argument('--tau_n', type=float, default=0.05)
     parser.add_argument('--class_blnc', type=int, default=3)
     # for dataset 
-    parser.add_argument('--train_ratio', type=float, default=0.4)
+    parser.add_argument('--seed', type=int, default=2)
+    parser.add_argument('--train_ratio', type=float, default=0.2)
     parser.add_argument('--test_ratio', type=float, default=0.2)
     parser.add_argument('--val_ratio', type=float, default=0.2)
-    parser.add_argument('--unlabel_ratio', type=float, default=0.2)
+    parser.add_argument('--unlabel_ratio', type=float, default=0.4)
     parser.add_argument('--metric', type=str, default='auc')
+    parser.add_argument('--dataset_balanced', type=bool, default=False)
     # for model
     parser.add_argument('--model_name', type=str, default='ourModel') # also the embedding dimension of encoder
     # parser.add_argument('--mask_edge_flag', action='store_true', default=True) # mask the edges         (deprecated)
@@ -629,21 +694,23 @@ if __name__ == "__main__":
     parser.add_argument('--num_layers', type=int, default=3)
     parser.add_argument('--dropout', type=float, default=0.3)
     # for optimizer
-    parser.add_argument('--lr', type=float, default=0.05)
+    parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--weight_decay', type=float, default=0.001)
     # parser.add_argument('--weight_decay', type=float, default=0.0005)
     
     # utils_data_pt = './utils_data/new_model_DE'
     
-    seed = 42
+    args = parser.parse_args()
+    
+    seed = args.seed
     random.seed(seed)  
     torch.manual_seed(seed)  
     torch.cuda.manual_seed_all(seed) 
     
-    args = parser.parse_args()
+    
     dataset = load_dataset(args.dataset)
-    utils_data_pt = f'./utils_data/{args.model_name}_{args.edge_threshold}_{args.dataset}' if not args.upper_bound else f'./utils_data/{args.model_name}_upperBound_{args.dataset}'
+    utils_data_pt = f'./utils_data/{args.model_name}_{args.dataset}_{seed}_A_B_random' if not args.upper_bound else f'./utils_data/{args.model_name}_upperBound_{args.dataset}'
     # utils_data_pt = f'./utils_data/{args.model_name}_decoupled_{args.dataset}' 
     
     
@@ -664,6 +731,10 @@ if __name__ == "__main__":
     if args.model_name == 'ourModel':
         model = load_model('mlp', graph, args)
     
+    # multi-class
+    # if graph.num_class > 2:
+    #     args.node_threshold = args.node_threshold * args.node_threshold
+    #     args.edge_threshold = args.edge_threshold * args.edge_threshold
     
     # model = GCN(input_dim=graph.num_features
     #             output_dim=graph.num_class,
@@ -680,6 +751,9 @@ if __name__ == "__main__":
                       args=args)
     
     # print(f'Noise rate: {args.noise_rate}')
+    
+    # if args.warm_up and args.model_name == 'ourModel':
+    #     trainer.vote_to_split()
     
     acc = trainer.train()
     

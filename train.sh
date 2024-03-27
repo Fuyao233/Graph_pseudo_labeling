@@ -1,19 +1,19 @@
 #!/bin/bash
 
 # 定义dataset参数列表
-datasets=("yelp-chi"  "pokec" "arxiv-year" "chameleon" "cornell" "squirrel" "texas" "wisconsin")
+datasets=("yelp-chi" "chameleon" "cornell" "squirrel" "texas" "wisconsin")
 
 # 定义model_name参数列表
-model_names=("mlp" "GCN")
+model_names=("mlp" "GCN" "ourModel")
 
+seed_list=(0)
 
 
 # 遍历所有dataset
 for dataset in "${datasets[@]}"; do
-    # 遍历所有model_name
-    # for model_name in "${model_names[@]}"; do
-        # 调用train.py脚本
-    echo "Training with dataset ${dataset} and model ${model_name}"
-    python train.py --dataset "$dataset" 
-    # done
+    for model in "${model_names[@]}"; do
+        for seed in "${seed_list[@]}"; do
+            python train.py --dataset "$dataset" --model_name "$model" --seed  "$seed"
+        done
+    done
 done
