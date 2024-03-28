@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 定义dataset参数列表
-datasets=("yelp-chi" "chameleon" "cornell" "squirrel" "texas" "wisconsin")
+datasets=("yelp-chi" "chameleon" "squirrel")
 
 # 定义model_name参数列表
 model_names=("mlp" "GCN" "ourModel")

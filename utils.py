@@ -137,17 +137,17 @@ def split_dataset_balanced(dataset, args):
                 np.random.shuffle(indices)
                 # train_indices[indices[:(N_train_A+N_train_B)//num_class]]= True 
                 
-                train_A_indices[indices[:N_train_A//num_class]] = True
-                train_B_indices[indices[N_train_A//num_class:N_train_A//num_class+N_train_B//num_class]] = True
+                train_A_indices[indices[:N_train_A//num_class]] = True # for random
+                train_B_indices[indices[N_train_A//num_class:N_train_A//num_class+N_train_B//num_class]] = True # for random
         else:
             indices = torch.where(labels>=0)[0].numpy()
             np.random.shuffle(indices)
             # train_indices[indices[:N_train_A+N_train_B]] = True
             
-            train_A_indices[indices[:N_train_A]] = True
-            train_B_indices[indices[N_train_A:N_train_A+N_train_B]] = True
+            train_A_indices[indices[:N_train_A]] = True # for random
+            train_B_indices[indices[N_train_A:N_train_A+N_train_B]] = True # for random
         
-        train_indices = torch.logical_or(train_A_indices, train_B_indices).detach()
+        train_indices = torch.logical_or(train_A_indices, train_B_indices).detach()  # for random
         
         # check balancy
         n1_A = torch.sum(labels[train_indices]==1)

@@ -480,6 +480,12 @@ class ourModel(nn.Module):
                 for i in range(num_layers-2)] + 
             [myConv(in_channels=hidden_dim, out_channels=output_dim, n_class=output_dim)]    
         )
+        
+        self.lins = torch.nn.ModuleList(
+            [nn.Linear(input_dim, output_dim)] +
+            [nn.Linear(hidden_dim, output_dim)                             
+                for i in range(num_layers-2)]
+        )
 
         self.bns = torch.nn.ModuleList([
             torch.nn.BatchNorm1d(num_features=hidden_dim) 
@@ -492,19 +498,21 @@ class ourModel(nn.Module):
     def forward(self,data,auto_encoder_loss_flag=False):
         auto_encoder_loss = None
         x = deepcopy(data)
+        # res = []
         for conv, bn in zip(self.convs[:-1], self.bns):
             x1 = None
             if auto_encoder_loss_flag:
                 conv.set_auto_encoder_loss_flag()
                 x1, sub_auto_encoder_loss = conv(x)
                 auto_encoder_loss = sub_auto_encoder_loss if auto_encoder_loss is None else auto_encoder_loss + sub_auto_encoder_loss
-                    
+
             else:
                 x1 = conv(x)
             x1 = bn(x1) 
             x1 = F.relu(x1) 
             if self.training:
                 x1 = F.dropout(x1, p=self.dropout)
+            # res.append(x1)
             x.x = x1
             
         
@@ -518,6 +526,8 @@ class ourModel(nn.Module):
             auto_encoder_loss = auto_encoder_loss + sub_auto_encoder_loss
         else:
             x = self.convs[-1](x)
+        # res.append(x)
+        # res = torch.stack(res)
         
         if auto_encoder_loss_flag:
             return x, auto_encoder_loss

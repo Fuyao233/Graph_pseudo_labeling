@@ -4,6 +4,7 @@ from utils import *
 from model import GCN, ourModel, MLP
 from tqdm import tqdm
 from torch.optim import Adam, SGD, AdamW
+from FocalLoss import FocalLoss
 import torch.nn.functional as F
 from selecting_algorithm import Flexmatch, UPS
 import os 
@@ -345,6 +346,7 @@ class Trainer:
         graph_iter = self.training_graph 
         optimizer = Adam(model_iter.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         # scheduler = 
+        # criterion = FocalLoss()
         criterion = nn.CrossEntropyLoss()
         
         epoch = 0
@@ -544,7 +546,7 @@ class Trainer:
         graph = self.training_graph
         graph.to(device)
 
-        assert torch.sum(graph.train_index_A) == 0
+        assert torch.sum(graph.train_index_A) == 0 # 已经在前面随机分割过的话会报错
         
         features = self.training_graph.x[self.training_graph.train_index] 
         labels = self.training_graph.y[self.training_graph.train_index] 
@@ -559,6 +561,7 @@ class Trainer:
             vote_model.to(device)
             vote_model.train()
             optimizer = Adam(vote_model.parameters(), lr=self.lr, weight_decay=self.weight_decay) 
+            # criterion = FocalLoss()
             criterion = nn.CrossEntropyLoss()
             
             # split
@@ -604,11 +607,15 @@ class Trainer:
         final_easy_indices = torch.where(total_vote<=bar)[0]
         final_hard_indices = torch.where(total_vote>bar)[0]
 
+        
         # A-easy, B-hard
-        self.training_graph.train_index_B[final_easy_indices] = True 
-        self.graph.train_index_B[final_easy_indices] = True 
-        self.training_graph.train_index_A[final_hard_indices] = True 
-        self.graph.train_index_A[final_hard_indices] = True 
+        easy = train_indices[final_easy_indices]
+        hard = train_indices[final_hard_indices]
+        
+        self.training_graph.train_index_B[easy] = True 
+        self.graph.train_index_B[easy] = True 
+        self.training_graph.train_index_A[hard] = True 
+        self.graph.train_index_A[hard] = True 
         
             
 def save_res(acc, data_name, root='res/baselines.csv'):
@@ -664,6 +671,7 @@ if __name__ == "__main__":
     # for train
     parser.add_argument('--warm_up', type=bool, default=True)
     parser.add_argument('--upper_bound', type=bool, default=False)
+    
     parser.add_argument('--A_B_ratio', type=int, default=0.5)
     # parser.add_argument('--noise_rate', type=float, default=0.35)
     # for flexmatch

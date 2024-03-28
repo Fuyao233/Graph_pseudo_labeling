@@ -60,7 +60,7 @@ class Flexmatch:
         self.graph.propogated_confidence_from = self.graph.label_confidence[self.graph.edge_index[0]]
         self.graph.propogated_confidence_to = self.graph.label_confidence[self.graph.edge_index[1]]
         
-        node_unlabeled_index = (self.graph.unlabeled_index) * (self.graph.node_pseudolabel == -1) # TODO: node_pseudolabel 数量非减吗？待验证
+        node_unlabeled_index = (self.graph.unlabeled_index) * (self.graph.node_pseudolabel == -1)
         
         node_indices = torch.zeros_like(self.graph.y)==1
         edge_indices = torch.zeros_like(self.graph.y)==1
@@ -77,11 +77,14 @@ class Flexmatch:
         if 'node_pseudolabel_indices_A' not in self.graph:
             self.graph.node_pseudolabel_indices_A = torch.zeros_like(self.graph.node_pseudolabel, dtype=bool)
             self.graph.node_pseudolabel_indices_B = torch.zeros_like(self.graph.node_pseudolabel, dtype=bool)
-        # node_pseudolabel_indices = torch.where(self.graph.node_pseudolabel>=0)[0]
+        node_pseudolabel_indices = torch.where(self.graph.node_pseudolabel>=0)[0]
         # random_indices = torch.randperm(len(node_pseudolabel_indices))
         # self.graph.node_pseudolabel_indices_A[node_pseudolabel_indices[random_indices[:len(node_pseudolabel_indices)//2]]] = True 
         # self.graph.label_confidence[self.graph.node_pseudolabel_indices_A] = 1.
         # self.graph.node_pseudolabel_indices_B[node_pseudolabel_indices[random_indices[len(node_pseudolabel_indices)//2:]]] = True 
+        
+        self.graph.label_confidence[node_pseudolabel_indices] = 1.
+        self.graph.edge_pseudolabel[node_pseudolabel_indices] = self.graph.node_pseudolabel[node_pseudolabel_indices]
         
         node_pseudo_label_acc = torch.mean((y_hat[node_indices] == self.graph.y[node_indices])*1.)
         edge_pseudo_label_acc = torch.mean((y_hat[edge_indices] == self.graph.y[edge_indices])*1.)
