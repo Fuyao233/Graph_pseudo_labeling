@@ -2,6 +2,13 @@ from Non_Homophily_Large_Scale.dataset import *
 from torch_geometric.data import Data
 import random 
 from sklearn.metrics import roc_auc_score 
+import torch
+import pandas as pd
+import graphistry
+import networkx as nx
+import plotly.graph_objects as go
+from plotly.offline import plot
+import yaml
 
 # datanames = ['twitch-e', 'fb100', 'ogbn-proteins', 'deezer-europe', 'arxiv-year', 'pokec', 'snap-patents',
 #              'yelp-chi', 'ogbn-arxiv', 'ogbn-products', 'Cora', 'CiteSeer', 'PubMed', 'chameleon', 'cornell',
@@ -11,6 +18,78 @@ datanames = ['fb100']
 def load_dataset(name):
     return load_nc_dataset(name)
 
+
+class DataLoader_folder:
+    def __init__(self, folder_path):
+        self.folder_path = folder_path
+        self.files_content = {}
+        
+        self.load_files()
+
+    def load_files(self):
+        
+        for file_name in os.listdir(self.folder_path):
+            file_path = os.path.join(self.folder_path, file_name)
+            if os.path.isfile(file_path):
+                file_base_name, file_extension = os.path.splitext(file_name)
+                try:
+                    if file_extension == '.npy':
+                        self.files_content[file_base_name] = np.load(file_path, allow_pickle=True)
+                    elif file_extension == '.yaml':
+                        with open(file_path, 'r') as file:
+                            self.files_content[file_base_name] = yaml.safe_load(file)
+                    elif file_extension == '.pkl':
+                        with open(file_path, 'rb') as file:
+                            self.files_content[file_base_name] = pickle.load(file)
+                except Exception as e:
+                    print(f"无法读取文件 {file_name}: {e}")
+
+    def __getattr__(self, item):
+        if item in self.files_content:
+            return self.files_content[item]
+        else:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{item}'")
+
+
+
+def visualize_graph(graph, color_key, save_path=None):
+    G = nx.Graph()
+    G.add_nodes_from(range(graph.num_nodes))
+    G.add_edges_from(graph.edge_index.T.numpy())
+
+    pos = nx.spring_layout(G, seed=42)
+
+    color = graph[color_key].numpy()
+
+    pos_array = np.array(list(pos.values()))
+    x_nodes = pos_array[:, 0]  
+    y_nodes = pos_array[:, 1] 
+
+    x_edges = []
+    y_edges = []
+    for edge in G.edges():
+        x_edges.extend([pos[edge[0]][0], pos[edge[1]][0], None])
+        y_edges.extend([pos[edge[0]][1], pos[edge[1]][1], None])
+
+    edge_trace = go.Scatter(x=x_edges, y=y_edges, line=dict(width=0.5, color='#888'), hoverinfo='none', mode='lines')
+
+
+    node_trace = go.Scatter(x=x_nodes, y=y_nodes, mode='markers', hoverinfo='text', text=[f'class {i}' for i in color],
+                            marker=dict(color=color, colorscale='Rainbow', showscale=True, line_width=1))
+
+    fig = go.Figure(data=[edge_trace, node_trace], layout=go.Layout(showlegend=False, hovermode='closest',
+                                                                    margin=dict(b=0, l=0, r=0, t=0),
+                                                                    xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                                                                    yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)))
+
+    if save_path is None:
+        fig.show()
+    else:
+        fig.write_html(f"{save_path}.html")
+        fig.write_image(f"{save_path}.jpeg")
+    
+    return 
+    
 
 def directed_check(graph):
     for i in range(10):
@@ -135,14 +214,14 @@ def split_dataset_balanced(dataset, args):
             for c in range(num_class):
                 indices = torch.where(labels==c)[0].numpy()
                 np.random.shuffle(indices)
-                # train_indices[indices[:(N_train_A+N_train_B)//num_class]]= True 
+                # train_indices[indices[:(N_train_A+N_train_B)//num_class]]= True # for un-random
                 
                 train_A_indices[indices[:N_train_A//num_class]] = True # for random
                 train_B_indices[indices[N_train_A//num_class:N_train_A//num_class+N_train_B//num_class]] = True # for random
         else:
             indices = torch.where(labels>=0)[0].numpy()
             np.random.shuffle(indices)
-            # train_indices[indices[:N_train_A+N_train_B]] = True
+            # train_indices[indices[:N_train_A+N_train_B]] = True # for un-random
             
             train_A_indices[indices[:N_train_A]] = True # for random
             train_B_indices[indices[N_train_A:N_train_A+N_train_B]] = True # for random

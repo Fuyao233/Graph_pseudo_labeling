@@ -297,16 +297,16 @@ class Decoder(nn.Module):
 
 # conv based on GraphSage
 class myConv(SAGEConv):
-    def __init__(self, in_channels, out_channels, n_class):
+    def __init__(self, in_channels, out_channels, n_class, soft_flag):
         super().__init__(in_channels, out_channels)
         self.encoder_group = nn.ModuleList([Encoder(in_channels) for _ in range(n_class)])
         self.decoder_group = nn.ModuleList([Decoder(in_channels) for _ in range(n_class)])
+        self.soft_flag = soft_flag
 
     def forward(self, graph):
         self.graph = graph
         x = graph.x.clone() 
         edge_index = graph.edge_index 
-        self.full_confidence = graph.full_confidence
         
         autoencoder_loss = None
         if self.auto_encoder_loss_flag:
@@ -330,91 +330,98 @@ class myConv(SAGEConv):
             return out
     
     def encoder_forward(self, x):
-        # TODO:based on combination
-        # combination_weight = self.full_confidence.unsqueeze(-1)
-        # output = [self.encoder_group[i](x) for i in range(len(self.encoder_group))]
-        # output = torch.stack(output) # c * N * d
-        # output = output.permute(1,0,2) # N * c * d
-        # return output * combination_weight
+        if self.soft_flag:
+            # TODO:based on combination
+            combination_weight = self.node_confidence.unsqueeze(-1)
+            output = [self.encoder_group[i](x) for i in range(len(self.encoder_group))]
+            output = torch.stack(output) # c * N * d
+            output = output.permute(1,0,2) # N * c * dr
+            res = output * combination_weight
+            return res.sum(dim=1) # N * d
         
-        # based on edge_pseudolabel
-        mlp_group = self.encoder_group
-        indices = self.graph.edge_pseudolabel
-        # group
-        sorted_indices = torch.argsort(indices)
-        sorted_antoencoder_indices = indices[sorted_indices]
-        sorted_x = x[sorted_indices]
-        
-        # forward
-        outputs = []
-        if -1 in sorted_antoencoder_indices:
-            start_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][0]
-            end_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][-1] + 1
-            self.unlabeled_features = sorted_x[start_idx:end_idx] # save for reconstruction
-            self.unlabeled_indices = sorted_indices[start_idx:end_idx]
-            outputs.append(torch.zeros(((end_idx-start_idx), mlp_group[0].out_channel)).to(self.unlabeled_indices.device)) # add features of unlabeled nodes
-        for mlp_idx in range(len(mlp_group)):
-            start_idx = None 
-            end_idx = None 
-            match_index = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0]
-            if len(match_index)==0:
-                continue 
-            else:
-                start_idx = match_index[0]
-                end_idx = match_index[-1] + 1
+        else:
+            # based on edge_pseudolabel
+            mlp_group = self.encoder_group
+            indices = self.graph.edge_pseudolabel
+            # group
+            sorted_indices = torch.argsort(indices)
+            sorted_antoencoder_indices = indices[sorted_indices]
+            sorted_x = x[sorted_indices]
             
-            outputs.append(mlp_group[mlp_idx](sorted_x[start_idx:end_idx]))
-        
-        # resort the outputs
-        processed = torch.cat(outputs, dim=0)
-        inverse_indices = torch.argsort(sorted_indices)
-        result = processed[inverse_indices]
+            # forward
+            outputs = []
+            if -1 in sorted_antoencoder_indices:
+                start_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][0]
+                end_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][-1] + 1
+                self.unlabeled_features = sorted_x[start_idx:end_idx] # save for reconstruction
+                self.unlabeled_indices = sorted_indices[start_idx:end_idx]
+                outputs.append(torch.zeros(((end_idx-start_idx), mlp_group[0].out_channel)).to(self.unlabeled_indices.device)) # add features of unlabeled nodes
+            for mlp_idx in range(len(mlp_group)):
+                start_idx = None 
+                end_idx = None 
+                match_index = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0]
+                if len(match_index)==0:
+                    continue 
+                else:
+                    start_idx = match_index[0]
+                    end_idx = match_index[-1] + 1
+                
+                outputs.append(mlp_group[mlp_idx](sorted_x[start_idx:end_idx]))
+            
+            # resort the outputs
+            processed = torch.cat(outputs, dim=0)
+            inverse_indices = torch.argsort(sorted_indices)
+            result = processed[inverse_indices]
 
-        # self.add_self_loops = False 
-        
-        return result         
+            # self.add_self_loops = False 
+            
+            return result         
     
     def decoder_forward(self, x, index):
-        # TODO:based on combination
-        # combination_weight = self.full_confidence[index].unsqueeze(-1)
-        # output = [self.decoder_group[i](x) for i in range(len(self.decoder_group))]
-        # output = torch.stack(output) # c * N * d
-        # output = output.permute(1,0,2) # N * c * d 
-    
-        # base on edge_pseudolabel
-        mlp_group = self.decoder_group
-        indices = self.graph.edge_pseudolabel[index]
-        
-        sorted_indices = torch.argsort(indices)
-        sorted_antoencoder_indices = indices[sorted_indices]
-        sorted_x = x[sorted_indices]
-        
-        # forward
-        outputs = []
-        if -1 in sorted_antoencoder_indices:
-            start_idx = (sorted_antoencoder_indices == -1 ).nonzero(as_tuple=True)[0][0] 
-            end_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][-1] + 1
-            outputs.append(torch.zeros(((end_idx-start_idx), mlp_group[0].out_channel)).to(self.unlabeled_indices.device)) # add features of unlabeled nodes
-        
-        
-        for mlp_idx in range(len(mlp_group)):
-            match_indices = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0]
-            start_idx = None 
-            end_idx = None 
-            if len(match_indices) == 0:
-                continue 
-            else:
-                start_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][0]
-                end_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][-1] + 1
-            
-            outputs.append(mlp_group[mlp_idx](sorted_x[start_idx:end_idx]))
-        
-        # resort the outputs
-        processed = torch.cat(outputs, dim=0)
-        inverse_indices = torch.argsort(sorted_indices)
-        result = processed[inverse_indices]
+        if self.soft_flag:
+            # TODO:based on combination
+            combination_weight = self.node_confidence[index].unsqueeze(-1)
+            output = [self.decoder_group[i](x) for i in range(len(self.decoder_group))]
+            output = torch.stack(output) # c * N * d
+            output = output.permute(1,0,2) # N * c * d
+            res = output * combination_weight 
+            return res.sum(dim=1)
 
-        return result         
+        else:
+            # base on edge_pseudolabel
+            mlp_group = self.decoder_group
+            indices = self.graph.edge_pseudolabel[index]
+            
+            sorted_indices = torch.argsort(indices)
+            sorted_antoencoder_indices = indices[sorted_indices]
+            sorted_x = x[sorted_indices]
+            
+            # forward
+            outputs = []
+            if -1 in sorted_antoencoder_indices:
+                start_idx = (sorted_antoencoder_indices == -1 ).nonzero(as_tuple=True)[0][0] 
+                end_idx = (sorted_antoencoder_indices == -1).nonzero(as_tuple=True)[0][-1] + 1
+                outputs.append(torch.zeros(((end_idx-start_idx), mlp_group[0].out_channel)).to(self.unlabeled_indices.device)) # add features of unlabeled nodes
+            
+            
+            for mlp_idx in range(len(mlp_group)):
+                match_indices = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0]
+                start_idx = None 
+                end_idx = None 
+                if len(match_indices) == 0:
+                    continue 
+                else:
+                    start_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][0]
+                    end_idx = (sorted_antoencoder_indices == mlp_idx).nonzero(as_tuple=True)[0][-1] + 1
+                
+                outputs.append(mlp_group[mlp_idx](sorted_x[start_idx:end_idx]))
+            
+            # resort the outputs
+            processed = torch.cat(outputs, dim=0)
+            inverse_indices = torch.argsort(sorted_indices)
+            result = processed[inverse_indices]
+
+            return result         
     
     def aggregate(self, inputs, index, ptr, dim_size):
         if len(inputs) == 0:
@@ -451,6 +458,9 @@ class myConv(SAGEConv):
     def set_auto_encoder_loss_flag(self):
         self.auto_encoder_loss_flag = True
     
+    def set_node_confidence(self, logits):
+        self.node_confidence = torch.softmax(logits, dim=1) 
+        
     def select_edge(self, inputs, index):
         
         edge_label = self.graph.edge_pseudolabel
@@ -470,21 +480,24 @@ class ourModel(nn.Module):
                  hidden_dim, 
                  output_dim, 
                  num_layers,
-                 dropout):
+                 dropout,
+                 soft_flag = True):
         
         super(ourModel, self).__init__()
         
+        self.soft_flag = soft_flag
+        
         self.convs = torch.nn.ModuleList(
-            [myConv(in_channels=input_dim, out_channels=hidden_dim, n_class=output_dim)] +
-            [myConv(in_channels=hidden_dim, out_channels=hidden_dim, n_class=output_dim)                             
+            [myConv(in_channels=input_dim, out_channels=hidden_dim, n_class=output_dim, soft_flag=soft_flag)] +
+            [myConv(in_channels=hidden_dim, out_channels=hidden_dim, n_class=output_dim, soft_flag=soft_flag)                             
                 for i in range(num_layers-2)] + 
-            [myConv(in_channels=hidden_dim, out_channels=output_dim, n_class=output_dim)]    
+            [myConv(in_channels=hidden_dim, out_channels=output_dim, n_class=output_dim, soft_flag=soft_flag)]    
         )
         
         self.lins = torch.nn.ModuleList(
             [nn.Linear(input_dim, output_dim)] +
             [nn.Linear(hidden_dim, output_dim)                             
-                for i in range(num_layers-2)]
+                for i in range(num_layers-1)]
         )
 
         self.bns = torch.nn.ModuleList([
@@ -498,8 +511,16 @@ class ourModel(nn.Module):
     def forward(self,data,auto_encoder_loss_flag=False):
         auto_encoder_loss = None
         x = deepcopy(data)
-        # res = []
-        for conv, bn in zip(self.convs[:-1], self.bns):
+        res = []
+
+        for n, conv in enumerate(self.convs[:-1]):
+            bn = self.bns[n]
+            
+            
+            layer_node_logits = self.lins[n](x.x)
+            conv.set_node_confidence(layer_node_logits)
+            res.append(layer_node_logits)
+            
             x1 = None
             if auto_encoder_loss_flag:
                 conv.set_auto_encoder_loss_flag()
@@ -512,9 +533,12 @@ class ourModel(nn.Module):
             x1 = F.relu(x1) 
             if self.training:
                 x1 = F.dropout(x1, p=self.dropout)
-            # res.append(x1)
+
             x.x = x1
-            
+        
+        layer_node_logits = self.lins[-1](x.x)
+        self.convs[-1].set_node_confidence(layer_node_logits)
+        res.append(layer_node_logits)
         
             
             # if auto_encoder_loss_flag:
@@ -526,13 +550,22 @@ class ourModel(nn.Module):
             auto_encoder_loss = auto_encoder_loss + sub_auto_encoder_loss
         else:
             x = self.convs[-1](x)
-        # res.append(x)
-        # res = torch.stack(res)
+        res.append(x)
+        res = torch.stack(res)
+        
+        if not self.training:
+            return res[-1]
         
         if auto_encoder_loss_flag:
-            return x, auto_encoder_loss
+            if self.soft_flag:
+                return res, auto_encoder_loss
+            else:
+                return res[-1], auto_encoder_loss
         else:
-            return x
+            if self.soft_flag:
+                return res
+            else:
+                return res[-1]
         
         # x = data.x
         # for i, lin in enumerate(self.convs[:-1]):
