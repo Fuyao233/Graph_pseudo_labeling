@@ -378,8 +378,8 @@ class Trainer:
         state_dic['train_index'] = graph.train_index
         state_dic['train_index_A'] = graph.train_index_A
         state_dic['train_index_B'] = graph.train_index_B
-        state_dic['val_index'] = graph.train_index
-        state_dic['test_index'] = graph.train_index
+        state_dic['val_index'] = graph.val_index
+        state_dic['test_index'] = graph.test_index
         state_dic['unlabeled_index'] = graph.unlabeled_index
         state_dic['edge_pseudolabel'] = graph.edge_pseudolabel
         
@@ -523,7 +523,8 @@ class Trainer:
                     self.best_graph = deepcopy(graph_iter)
                     self.best_training_num_record = N 
 
-                    
+                
+                
                 best_val_metric_list.append(best_val_metric_iter)    
                 best_val_metric_iter = -torch.inf
                     
@@ -532,6 +533,10 @@ class Trainer:
                 
                 if self.model_name == 'mlp' or self.model_name == 'GCN':
                     break    
+                
+                # if len(best_val_metric_list)<=1 or best_val_metric_iter > np.max(best_val_metric_list):
+                if len(best_val_metric_list)>1:
+                    print(torch.mean(1.*(graph.y[graph.label_confidence>0.4]==graph.edge_pseudolabel[graph.label_confidence>0.4])))
                 
                 # pseudolabeling
                 self.update_train_data(best_model_iter, iteration_count)
@@ -544,6 +549,7 @@ class Trainer:
                     pass
                 
                 edge_label_list.append(self.graph.edge_pseudolabel.detach().cpu().numpy())
+                
                 
                 # restart
                 epoch = 0
@@ -559,10 +565,10 @@ class Trainer:
                 else:
                     counter = 0
                 # add_num_list.append(add_num_obs[0])
-                
-                 
-                # node_labels_pseudo_acc, node_labels_for_message_passing_acc, edge_acc = self.cal_edge_node_accuracy()
-                # print(f'node_labels_pseudo_acc: {node_labels_pseudo_acc}, node_labels_for_message_passing_acc: {node_labels_for_message_passing_acc}, edge_acc: {edge_acc}\n')
+                    
+                    
+                    # node_labels_pseudo_acc, node_labels_for_message_passing_acc, edge_acc = self.cal_edge_node_accuracy()
+                    # print(f'node_labels_pseudo_acc: {node_labels_pseudo_acc}, node_labels_for_message_passing_acc: {node_labels_for_message_passing_acc}, edge_acc: {edge_acc}\n')
                 
 
                     
@@ -747,8 +753,8 @@ def load_model(model_name, graph, args):
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='cornell')
-    parser.add_argument('--gpu', type=int, default=4)
+    parser.add_argument('--dataset', type=str, default='chameleon')
+    parser.add_argument('--gpu', type=int, default=0)
     
     # hyper-parameter
     # for autoencoder
@@ -763,8 +769,8 @@ if __name__ == "__main__":
     # for flexmatch
     parser.add_argument('--flex_batch', type=float, default=64)
     parser.add_argument('--flexmatch_weight', type=float, default=0.6)
-    parser.add_argument('--node_threshold', type=float, default=0.9)
-    parser.add_argument('--edge_threshold', type=float, default=0.8)
+    parser.add_argument('--node_threshold', type=float, default=0.4)
+    parser.add_argument('--edge_threshold', type=float, default=0.4)
     # for ups
     parser.add_argument('--no_uncertainty', type=bool, default=False)
     parser.add_argument('--temp_nl', type=float, default=2)

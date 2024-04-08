@@ -18,14 +18,23 @@ def visulization_split(graph_name, layout, state_dic, save_name):
     pos = layout
     # pos = nx.random_layout(G, seed=42)
 
-    color = state_dic["edge_pseudolabel"].numpy()
+    # color-prediction
+    # color = state_dic["edge_pseudolabel"].numpy()
+    
+    # color-edge_threshold
+    color = np.zeros_like(state_dic["edge_pseudolabel"].numpy())
+    if state_dic["label_confidence"] is not None:
+        color[state_dic["label_confidence"]>state_dic['edge_threshold']] = 1
+    color = np.array(['#FF0000' if c == 1 else '#0000FF' for c in color])
+    
+    
     part_indices = torch.zeros_like(state_dic['train_index'], dtype=int)
     part_indices[state_dic['train_index_A']] = 0
     part_indices[state_dic['train_index_B']] = 1
     part_indices[state_dic['val_index']] = 2
     part_indices[state_dic['test_index']] = 3
     part_indices[state_dic['unlabeled_index']] = 4
-
+    
     # TODO:考虑pseudolabel, 完善text
     part_list = ['train_A', 'train_B', 'val', 'test', 'unlabeled']
     
@@ -45,25 +54,28 @@ def visulization_split(graph_name, layout, state_dic, save_name):
     y_label = graph.y.numpy()
     
     # 分离出加粗边框的节点和不加粗的节点
-    bold_border_indices = [i for i, (pseudo, true) in enumerate(zip(edge_pseudolabel, y_label)) if pseudo != true]
     normal_border_indices = [i for i, (pseudo, true) in enumerate(zip(edge_pseudolabel, y_label)) if pseudo == true]
+    bold_border_indices = [i for i, (pseudo, true) in enumerate(zip(edge_pseudolabel, y_label)) if pseudo != true]
+    
     # 不加粗边框的节点
     node_trace_normal = go.Scatter(x=x_nodes[normal_border_indices], y=y_nodes[normal_border_indices], mode='markers', hoverinfo='text',
-                                   text=[f'prediction {edge_pseudolabel[n]}<br>confidence {state_dic["label_confidence"][n] if state_dic["label_confidence"] is not None else "Nan"}<br>label {y_label[n]}<br>{part_list[part_indices[n]]}' for n in normal_border_indices],
-                                   marker=dict(color=[color[n] for n in normal_border_indices], colorscale='Rainbow', showscale=True, line=dict(width=0.5, color='#ffffff')))
+                                   text=[f'prediction {edge_pseudolabel[n]}<br>confidence {state_dic["label_confidence"][n] if state_dic["label_confidence"] is not None else "Nan"}<br>label {y_label[n]}<br>{part_list[part_indices[n]]}<br>Node {n}' for n in normal_border_indices],
+                                   marker=dict(size=10, color=[color[n] for n in normal_border_indices], colorscale='Rainbow', showscale=True, line=dict(width=0.5, color='#ffffff')))
     
     # 加粗边框的节点
     node_trace_bold = go.Scatter(x=x_nodes[bold_border_indices], y=y_nodes[bold_border_indices], mode='markers', hoverinfo='text',
-                                 text=[f'prediction {edge_pseudolabel[n]}<br>confidence {state_dic["label_confidence"][n] if state_dic["label_confidence"] is not None else "Nan"}<br>label {y_label[n]}<br>{part_list[color[n]]}' for n in bold_border_indices],
-                                 marker=dict(color=[color[n] for n in bold_border_indices], colorscale='Rainbow', showscale=True, line=dict(width=2, color='#ffffff')))
+                                 text=[f'prediction {edge_pseudolabel[n]}<br>confidence {state_dic["label_confidence"][n] if state_dic["label_confidence"] is not None else "Nan"}<br>label {y_label[n]}<br>{part_list[part_indices[n]]}<br>Node {n}' for n in bold_border_indices],
+                                 marker=dict(size=10, color=[color[n] for n in bold_border_indices], colorscale='Rainbow', showscale=True, line=dict(width=2, color='#ffffff')))
 
     fig = go.Figure(data=[edge_trace, node_trace_normal, node_trace_bold], layout=go.Layout(showlegend=False, hovermode='closest',
                                                                                             paper_bgcolor='black',  plot_bgcolor='black',  # 设置图表主背景为黑色
                                                                                            margin=dict(b=0, l=0, r=0, t=0),
                                                                                            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                                                                                            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)))
-    fig.write_html(os.path.join('htmls', f'{save_name}.html'))
-    fig.write_image(os.path.join('imgs', f'{save_name}.png'))
+    # fig = px.bar
+    
+    fig.write_html(os.path.join('htmls', f'{save_name}_good_neighbors.html'))
+    fig.write_image(os.path.join('imgs', f'{save_name}_good_neighbors.png'))
 
 def draw_ground_truth(graph_name):
     graph = prepocessing(load_dataset(graph_name))
@@ -97,8 +109,8 @@ def draw_ground_truth(graph_name):
     
     return pos
 
-dataset_name_list = ["yelp-chi", "chameleon", "squirrel", "texas", "cornell", "wisconsin"]
-# dataset_name_list = ["texas"]
+# dataset_name_list = ["yelp-chi", "chameleon", "squirrel", "texas", "cornell", "wisconsin"]
+dataset_name_list = ["cornell"]
 dataset_name_list = list(reversed(dataset_name_list))
 for name in dataset_name_list:
     print(name)
