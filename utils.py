@@ -26,6 +26,9 @@ class DataLoader_folder:
         
         self.load_files()
 
+    def keys(self):
+        return self.files_content.keys()
+    
     def load_files(self):
         
         for file_name in os.listdir(self.folder_path):
@@ -382,7 +385,7 @@ def accuracy_threshold(logits, graph, threshold):
     return threshold_accuracy, pred_y.size()
 
 class EarlyStopper:
-    def __init__(self, patience=50, min_delta=0.01, max_iter=200):
+    def __init__(self, patience=70, min_delta=0.01, max_iter=200):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0

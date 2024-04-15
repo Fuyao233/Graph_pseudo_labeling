@@ -59,12 +59,12 @@ def visulization_split(graph_name, layout, state_dic, save_name):
     
     # 不加粗边框的节点
     node_trace_normal = go.Scatter(x=x_nodes[normal_border_indices], y=y_nodes[normal_border_indices], mode='markers', hoverinfo='text',
-                                   text=[f'prediction {edge_pseudolabel[n]}<br>confidence {state_dic["label_confidence"][n] if state_dic["label_confidence"] is not None else "Nan"}<br>label {y_label[n]}<br>{part_list[part_indices[n]]}<br>Node {n}' for n in normal_border_indices],
+                                   text=[f'prediction {edge_pseudolabel[n]}<br>confidence {state_dic["label_confidence"][n] if state_dic["label_confidence"] is not None else "Nan"}<br>label {y_label[n]}<br>{part_list[part_indices[n]]}<br> num_neighbors {len([n for n in G.neighbors(n) if n in normal_border_indices])}<br>Node {n}' for n in normal_border_indices],
                                    marker=dict(size=10, color=[color[n] for n in normal_border_indices], colorscale='Rainbow', showscale=True, line=dict(width=0.5, color='#ffffff')))
     
     # 加粗边框的节点
     node_trace_bold = go.Scatter(x=x_nodes[bold_border_indices], y=y_nodes[bold_border_indices], mode='markers', hoverinfo='text',
-                                 text=[f'prediction {edge_pseudolabel[n]}<br>confidence {state_dic["label_confidence"][n] if state_dic["label_confidence"] is not None else "Nan"}<br>label {y_label[n]}<br>{part_list[part_indices[n]]}<br>Node {n}' for n in bold_border_indices],
+                                 text=[f'prediction {edge_pseudolabel[n]}<br>confidence {state_dic["label_confidence"][n] if state_dic["label_confidence"] is not None else "Nan"}<br>label {y_label[n]}<br>{part_list[part_indices[n]]}<br>num_neighbors {len([n for n in G.neighbors(n) if n in normal_border_indices])}<br>Node {n}' for n in bold_border_indices],
                                  marker=dict(size=10, color=[color[n] for n in bold_border_indices], colorscale='Rainbow', showscale=True, line=dict(width=2, color='#ffffff')))
 
     fig = go.Figure(data=[edge_trace, node_trace_normal, node_trace_bold], layout=go.Layout(showlegend=False, hovermode='closest',
@@ -74,8 +74,8 @@ def visulization_split(graph_name, layout, state_dic, save_name):
                                                                                            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False)))
     # fig = px.bar
     
-    fig.write_html(os.path.join('htmls', f'{save_name}_good_neighbors.html'))
-    fig.write_image(os.path.join('imgs', f'{save_name}_good_neighbors.png'))
+    fig.write_html(os.path.join('htmls', f'{save_name}_noraml.html'))
+    fig.write_image(os.path.join('imgs', f'{save_name}_normal.png'))
 
 def draw_ground_truth(graph_name):
     graph = prepocessing(load_dataset(graph_name))

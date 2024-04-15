@@ -47,12 +47,20 @@ class Flexmatch:
     
     def select(self):
         # print(f'Node_threshold: {self.node_threshold}; Edge_threshold: {self.edge_threshold}')
-        print(f'Node_threshold: {self.node_threshold}')
-        self.graph.edge_threshold = self.edge_threshold
+        
+        # 
         # naive, fixed xthreshold
         confidence, y_hat = self.prediction.max(dim=1)
         self.graph.full_confidence = torch.softmax(self.prediction, dim=1).detach()
         
+        mean = confidence[self.graph.unlabeled_index].mean()
+        std = confidence[self.graph.unlabeled_index].std()
+        node_threshold = mean+std 
+        self.graph.node_threshold = (mean+std).detach() 
+        self.graph.edge_threshold = (mean+std).detach() TODO: 看看可视化动态图，分析这个阈值合不合理
+        self.graph.edge_threshold = 0
+        
+        print(f'Node_threshold: {node_threshold}')
         self.graph.label_confidence = confidence.detach().clone()
         self.graph.label_confidence[self.graph.train_index_A] = 1.
         self.graph.edge_pseudolabel = y_hat.detach().clone()
@@ -66,7 +74,7 @@ class Flexmatch:
         edge_indices = torch.zeros_like(self.graph.y)==1
         
         for c in range(self.graph.num_class):
-            selected_node_indices = torch.where(node_unlabeled_index*(y_hat==c)*(confidence>self.node_threshold))[0]
+            selected_node_indices = torch.where(node_unlabeled_index*(y_hat==c)*(confidence>node_threshold))[0]
             self.graph.node_pseudolabel[selected_node_indices] = c
             node_indices[selected_node_indices] = True
         
