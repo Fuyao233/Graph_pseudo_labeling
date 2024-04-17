@@ -5,10 +5,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from copy import deepcopy
 from models.myConv import myConv
+from models.myConv_basis import myConv_basis
 from models.GCN import GCN 
 from models.mlp import MLP
 import torch
-
+from basis_method.basis_process_dim32_class2 import basis_process_dim32_class2
 
 class ourModel(nn.Module):
     def __init__(self, 
@@ -52,7 +53,6 @@ class ourModel(nn.Module):
         for n, conv in enumerate(self.convs[:-1]):
             bn = self.bns[n]
             
-            
             layer_node_logits = self.lins[n](x.x)
             conv.set_node_confidence(layer_node_logits)
             res.append(layer_node_logits)
@@ -62,7 +62,6 @@ class ourModel(nn.Module):
                 conv.set_auto_encoder_loss_flag()
                 x1, sub_auto_encoder_loss = conv(x)
                 auto_encoder_loss = sub_auto_encoder_loss if auto_encoder_loss is None else auto_encoder_loss + sub_auto_encoder_loss
-
             else:
                 x1 = conv(x)
             x1 = bn(x1) 
@@ -123,17 +122,23 @@ class ourModel_basis(nn.Module):
                  output_dim, 
                  num_layers,
                  dropout,
+                 basis_num=4,
                  soft_flag = True):
         
             super(ourModel, self).__init__()
         
             self.soft_flag = soft_flag
+            self.num_class = output_dim
+            self.basis_num = basis_num
+            self.basis_dim = hidden_dim
+            basis_matrix = basis_process_dim32_class2(basis_dim=hidden_dim, basis_num=basis_num)
+            self.cross_basis_matrix = self.produce_cross_basis(basis_matrix)
             
             self.convs = torch.nn.ModuleList(
-                [myConv(in_channels=input_dim, out_channels=hidden_dim, n_class=output_dim, soft_flag=soft_flag)] +
-                [myConv(in_channels=hidden_dim, out_channels=hidden_dim, n_class=output_dim, soft_flag=soft_flag)                             
+                [myConv_basis(in_channels=input_dim, out_channels=hidden_dim, n_class=output_dim, cross_basis_matrix=self.cross_basis_matrix, basis_num=basis_num, soft_flag=soft_flag)] +
+                [myConv_basis(in_channels=hidden_dim, out_channels=hidden_dim, n_class=output_dim, cross_basis_matrix=self.cross_basis_matrix, basis_num=basis_num, soft_flag=soft_flag)                             
                     for i in range(num_layers-2)] + 
-                [myConv(in_channels=hidden_dim, out_channels=output_dim, n_class=output_dim, soft_flag=soft_flag)]    
+                [myConv_basis(in_channels=hidden_dim, out_channels=output_dim, n_class=output_dim, cross_basis_matrix=self.cross_basis_matrix, basis_num=basis_num, soft_flag=soft_flag)]    
             )
             
             self.lins = torch.nn.ModuleList(
@@ -150,3 +155,43 @@ class ourModel_basis(nn.Module):
             self.hidden_dim = hidden_dim
             self.num_layers = num_layers
         
+        def produce_cross_basis(self, basis_matrix):
+            # get inverse
+            inv_basis_matrix = torch.inverse(basis_matrix)
+            
+            # get combination_matrix c*c*N*d*d
+            c = self.num_class 
+            N = self.basis_num 
+            d = self.basis_dim
+            combine_matrix = torch.empty((c, c, N, d, d))
+            for i in range(c):
+                for j in range(c):
+                    if i==j:
+                        combine_matrix[i][j] = torch.eye(d).unsqueeze(0).expand(N, -1, -1)
+                    else:                        
+                        combine_matrix[i][j] = result_einsum = torch.einsum('bij,bjk->bik', basis_matrix[i], inv_basis_matrix[j])
+            # cross 
+            cross_basis = torch.empty((c, c, 2**(N//2), d, d))
+            for i in range(c):
+                for j in range(c):
+                    if i == j:
+                        cross_basis[i][j] = torch.eye(d).unsqueeze(0).expand(2**(N//2), -1, -1)
+                    else:    
+                        for idx in range(2**(N//2)):
+                            index_sequence = [(idx >> k) & 1 for k in range(N//2)]
+                            combine_matrix_sequence = combine_matrix[i][j]
+                            
+                            select_matrix_sequence = None 
+                            if i<j:
+                                select_matrix_sequence = [combine_matrix[2*k + bit, :, :] for k, bit in enumerate(index_sequence)]
+                            else:
+                                index_sequence.reverse()
+                                select_matrix_sequence = [combine_matrix[2*(N//2-k)-bit-1, :, :] for k, bit in enumerate(index_sequence)]
+                            
+                            result_matrix = select_matrix_sequence[0]
+                            for matrix in select_matrix_sequence[1:]:
+                                result_matrix = torch.matmul(result_matrix, matrix)
+                            
+                            cross_basis[i][j][idx] = result_matrix
+            
+            return cross_basis

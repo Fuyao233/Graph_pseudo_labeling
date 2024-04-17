@@ -57,7 +57,7 @@ class Flexmatch:
         std = confidence[self.graph.unlabeled_index].std()
         node_threshold = mean+std 
         self.graph.node_threshold = (mean+std).detach() 
-        self.graph.edge_threshold = (mean+std).detach() TODO: 看看可视化动态图，分析这个阈值合不合理
+        # self.graph.edge_threshold = (mean+std).detach() TODO: 看看可视化动态图，分析这个阈值合不合理
         self.graph.edge_threshold = 0
         
         print(f'Node_threshold: {node_threshold}')
