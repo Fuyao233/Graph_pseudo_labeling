@@ -1,5 +1,6 @@
 from Non_Homophily_Large_Scale.dataset import *
 from torch_geometric.data import Data
+from model import GCN, ourModel, MLP, ourModel_basis
 import random 
 from sklearn.metrics import roc_auc_score 
 import torch
@@ -18,6 +19,54 @@ datanames = ['fb100']
 def load_dataset(name):
     return load_nc_dataset(name)
 
+            
+def save_res(acc, data_name, root='res/baselines.csv'):
+    df = None
+    if os.path.exists(root):
+        df = pd.read_csv(root, index_col=0)
+        
+    else:
+        df = pd.DataFrame()
+    dic = df.to_dict()
+    dic[data_name] = {}
+    dic[data_name]['GCN'] = acc
+    df = pd.DataFrame(dic)
+    df.to_csv(root)
+    df.to_excel('res/baselines.xlsx')
+
+def load_model(model_name, graph, args):
+    if model_name == 'mlp':
+        return MLP(in_channels=graph.num_features,
+                   out_channels=graph.num_class,
+                   hidden_channels=args.hidden_dim,
+                   num_layers=args.num_layers,
+                   dropout=args.dropout
+                   )
+        
+    elif model_name == 'ourModel':
+        return ourModel(input_dim=graph.num_features, 
+                    output_dim=graph.num_class, 
+                    hidden_dim=args.hidden_dim, 
+                    num_layers=args.num_layers,
+                    dropout=args.dropout,
+                    soft_flag=args.soft_flag)
+    
+    elif model_name == 'GCN':
+        return GCN(input_dim=graph.num_features,
+                   output_dim=graph.num_class,
+                   hidden_dim=args.hidden_dim,
+                   num_layers=args.num_layers,
+                   dropout=args.dropout)
+    
+    elif model_name == 'ourModel_basis':
+        return ourModel_basis(input_dim=graph.num_features,
+                   output_dim=graph.num_class,
+                   hidden_dim=args.hidden_dim,
+                   num_layers=args.num_layers,
+                   dropout=args.dropout)
+    
+    else:
+        assert model_name in ['mlp', 'ourModel', 'GCN', 'ourModel_basis']
 
 class DataLoader_folder:
     def __init__(self, folder_path):

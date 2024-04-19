@@ -1,7 +1,6 @@
 import torch
 from torch_geometric.data import Data
 from utils import *
-from model import GCN, ourModel, MLP
 from tqdm import tqdm
 from torch.optim import Adam, SGD, AdamW
 from FocalLoss import FocalLoss
@@ -276,15 +275,14 @@ class Trainer:
         out = None 
         autoencoder_loss = None
         rec = None
-        if model_name == 'ourModel':
-            if self.warm_up:
+        if model_name == 'ourModel' or 'ourModel_basis':
+            if self.warm_up or self.args.basis_flag==True:
                 out = model(graph)
             else:
                 out, autoencoder_loss = model(graph, auto_encoder_loss_flag=True)    
             
-            if self.warm_up:    
+            if self.warm_up or self.args.basis_flag==True:    
                 groundtruth_loss = criterion(out[graph.train_index_A], graph.y[graph.train_index_A])
-
             else:
                 if self.args.soft_flag:
                     groundtruth_loss, rec = self.multi_layer_loss(criterion, out[:, graph.train_index_B, :], graph.y[graph.train_index_B])
@@ -308,13 +306,13 @@ class Trainer:
             #     pass 
             # else:
 
-            
-            record[0].append([groundtruth_loss.item(), autoencoder_loss.item() if not self.warm_up else 0])
             if self.args.soft_flag:
-                record[2].append(rec if not self.warm_up else [0]*self.args.num_layers)
-            else:
-                record[2].append(rec if not self.warm_up else None)
-             
+                record[0].append([groundtruth_loss.item(), autoencoder_loss.item() if not self.warm_up else 0])
+                if self.args.soft_flag:
+                    record[2].append(rec if not self.warm_up else [0]*self.args.num_layers)
+                else:
+                    record[2].append(rec if not self.warm_up else None)
+                
 
         elif model_name == 'mlp':
             out = model(graph)
@@ -420,6 +418,7 @@ class Trainer:
             prediction_record.append(pred_test)    
             best_epoch_record.append(best_epoch) 
 
+        self.data_save_dic['best_val_metric_list'].append(np.max(metric_record))
         
         Flexmatch(graph, prediction_record[np.argmax(metric_record)], self.node_threshold, self.edge_threshold, self.flex_batch, self.warm_up).select()
     
@@ -458,7 +457,7 @@ class Trainer:
         edge_label_list = []
         state_record_list = [] # record split of graph in each iteration
         
-        data_save_dic = {
+        self.data_save_dic = {
             "loss_list": loss_list,
             "metric_list": metric_list,
             "val_metric_list": val_metric_list,
@@ -498,7 +497,7 @@ class Trainer:
             if epoch==1:
                 # state_record_list.append(self.record_state(self.training_graph))
                 state_record_list.append(self.record_state(self.graph))
-                print(type(model_iter))
+                # print(type(model_iter))
                         
             if iteration_count>0 and epoch==1:    
                 
@@ -525,6 +524,12 @@ class Trainer:
             out, loss = self.cal_loss(model_name=self.model_name, model=model_iter, graph=graph_iter, criterion=criterion, record=[loss_list, pseudo_loss_list, muti_layer_loss_list])
             
             loss.backward()
+            par_x = model_iter.convs[0].par_x
+            par_y = model_iter.convs[0].par_y
+            par_m = model_iter.convs[0].par_m
+            par_n = model_iter.convs[0].par_n
+            # par_m = torch.flip(model_iter.convs[0].par_m, dims=[2]).permute(1,0,2)
+            # par_n = torch.flip(model_iter.convs[0].par_n, dims=[2]).permute(1,0,2)
             optimizer.step()
             # loss_list.append([groundtruth_loss.item(), 0])
             
@@ -620,6 +625,7 @@ class Trainer:
                 model_iter = load_model(self.model_name, graph_iter, self.args)
                 model_iter.to(torch.cuda.current_device())
                 optimizer = SGD(model_iter.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.args.weight_decay)
+                
                 self.stopper.reset()
                 # N = torch.sum(self.training_graph.node_pseudolabel>=0).item()
                 N = torch.sum(self.graph.node_pseudolabel>=0).item()
@@ -674,7 +680,7 @@ class Trainer:
         # np.save(os.path.join(utils_data_pt, 'edge_label_list.npy'), edge_label_list)
         
         with open('data_save_dic.json', 'w') as f:
-            json.dump(data_save_dic, f, indent=4)  
+            json.dump(self.data_save_dic, f, indent=4)  
         
         with open(os.path.join(utils_data_pt, 'setting.yaml'), 'w') as f:
             yaml.dump(vars(args), f)
@@ -778,52 +784,11 @@ class Trainer:
         self.graph.train_index_B[easy] = True 
         self.graph.train_index_B[easy] = True 
         
-            
-def save_res(acc, data_name, root='res/baselines.csv'):
-    df = None
-    if os.path.exists(root):
-        df = pd.read_csv(root, index_col=0)
-        
-    else:
-        df = pd.DataFrame()
-    dic = df.to_dict()
-    dic[data_name] = {}
-    dic[data_name]['GCN'] = acc
-    df = pd.DataFrame(dic)
-    df.to_csv(root)
-    df.to_excel('res/baselines.xlsx')
-
-def load_model(model_name, graph, args):
-    if model_name == 'mlp':
-        return MLP(in_channels=graph.num_features,
-                   out_channels=graph.num_class,
-                   hidden_channels=args.hidden_dim,
-                   num_layers=args.num_layers,
-                   dropout=args.dropout
-                   )
-        
-    elif model_name == 'ourModel':
-        return ourModel(input_dim=graph.num_features, 
-                    output_dim=graph.num_class, 
-                    hidden_dim=args.hidden_dim, 
-                    num_layers=args.num_layers,
-                    dropout=args.dropout,
-                    soft_flag=args.soft_flag)
-    
-    elif model_name == 'GCN':
-        return GCN(input_dim=graph.num_features,
-                   output_dim=graph.num_class,
-                   hidden_dim=args.hidden_dim,
-                   num_layers=args.num_layers,
-                   dropout=args.dropout)
-    
-    else:
-        assert model_name in ['mlp', 'ourModel', 'GCN']
 
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='texas')
+    parser.add_argument('--dataset', type=str, default='yelp-chi')
     parser.add_argument('--gpu', type=int, default=0)
     
     # hyper-parameter
@@ -858,14 +823,15 @@ if __name__ == "__main__":
     parser.add_argument('--metric', type=str, default='auc')
     parser.add_argument('--dataset_balanced', type=bool, default=False)
     # for model
-    parser.add_argument('--model_name', type=str, default='ourModel') # also the embedding dimension of encoder
+    parser.add_argument('--model_name', type=str, default='ourModel_basis') # also the embedding dimension of encoder
     # parser.add_argument('--mask_edge_flag', action='store_true', default=True) # mask the edges         (deprecated)
     parser.add_argument('--hidden_dim', type=int, default=32) # also the embedding dimension of encoder
     parser.add_argument('--num_layers', type=int, default=3)
     parser.add_argument('--dropout', type=float, default=0.3)
     parser.add_argument('--soft_flag', type=bool, default=False)
+    parser.add_argument('--basis_flag', type=bool, default=True) 
     # for optimizer
-    parser.add_argument('--lr', type=float, default=0.05)
+    parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--weight_decay', type=float, default=0.001)
     # parser.add_argument('--weight_decay', type=float, default=0.0005)
