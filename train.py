@@ -17,42 +17,38 @@ from copy import deepcopy
 import pickle
 import random
 import json
+import wandb
 
 class Trainer:
-    def __init__(self, graph, model, device_num, model_name,
-                 lr, momentum, weight_decay,  
-                 flexmatch_weight,
-                 flex_batch,
-                 autoencoder_weight,
-                 metric,
-                 args,
+    def __init__(self, graph, model, args,
                  select_method='flexmatch') :
+        
         self.graph = graph 
         self.model = model 
-        self.model_name = model_name
+        self.model_name = args.model_name
         self.args = args 
         
-        self.lr = lr
-        self.momentum = momentum 
-        self.weight_decay = weight_decay 
+        self.lr = args.lr
+        self.momentum = args.momentum 
+        self.weight_decay = args.weight_decay 
         
-        self.metric = metric
+        self.metric = args.metric
         # self.weight_decay = weight_decay
         self.edge_threshold = args.edge_threshold # to select edge label
         self.node_threshold = args.node_threshold # to select node label
         self.method = 'flexmatch'
-        self.flexmatch_weight = flexmatch_weight # weight for flexmatch loss
+        self.flexmatch_weight = args.flexmatch_weight # weight for flexmatch loss
         # self.flex_batch = int(self.graph.num_nodes*flex_batch_ratio) # select from a random batch of unlabeled samples each time updating training samples 
-        self.flex_batch = flex_batch # select from a random batch of unlabeled samples each time updating training samples 
+        # self.flex_batch = args.flex_batch # select from a random batch of unlabeled samples each time updating training samples 
         
         self.edge_status_list = []
         # self.update_stage_threshold = 0.005
         
-        self.autoencoder_weight = autoencoder_weight
+        self.autoencoder_weight = args.autoencoder_weight
         
         self.warm_up = args.warm_up
         
-        torch.cuda.set_device(device_num)
+        torch.cuda.set_device(args.gpu)
         device = torch.cuda.current_device()
         self.graph.to(device)
         self.model.to(device)
@@ -60,7 +56,7 @@ class Trainer:
         self.graph.node_pseudolabel = torch.zeros_like(graph.y)-2 # '-2' means unavailable data
         self.graph.node_pseudolabel[self.graph.unlabeled_index] = -1 # '-1' means unlabeled data
         self.graph.edge_pseudolabel = torch.zeros_like(graph.y) - 1 # '-1' means unlabeled
-        
+        self.graph.edge_threshold = args.edge_threshold
 
         # record the best model during the whole training process 
         self.best_model = None # best model among all best_model_iter
@@ -154,10 +150,10 @@ class Trainer:
             # Flexmatch(self.graph, prediction, self.fixed_threshold if self.update_pipeline_flag-1==0 else self.fixed_threshold*self.fixed_threshold, self.flex_batch).select()
             
             # fixed threshold
-            Flexmatch(self.graph, prediction, self.node_threshold, self.edge_threshold, self.flex_batch, self.warm_up).select()
+            Flexmatch(self.graph, prediction, self.node_threshold, self.edge_threshold).select()
             # UPS().select(self.args, self.graph, model, itr)
         
-        if args.upper_bound is True: 
+        if self.args.upper_bound is True: 
             self.graph.edge_pseudolabel = self.graph.y.clone()
             self.graph.propogated_confidence_from.fill_(1)
         
@@ -375,7 +371,7 @@ class Trainer:
         
         return state_dic
     
-    def warm_up_try(self, n_try):
+    def warm_up_try(self, n_try, wandb_record):
         # criterion: prediction accury
         # aim to select pseudolabels with high quality and find a good start
         # 方便多次调用，使warm up结果稳定
@@ -419,15 +415,45 @@ class Trainer:
             best_epoch_record.append(best_epoch) 
 
         self.data_save_dic['best_val_metric_list'].append(np.max(metric_record))
-        
-        Flexmatch(graph, prediction_record[np.argmax(metric_record)], self.node_threshold, self.edge_threshold, self.flex_batch, self.warm_up).select()
+        print(f"MLP best metric: {np.max(metric_record)}")
+        if wandb_record:
+            wandb.log({"MLP_best": {np.max(metric_record)}})
+            
+        Flexmatch(graph, prediction_record[np.argmax(metric_record)], self.node_threshold, self.edge_threshold).select()
     
-    def train(self):
+    def cal_train_metric(self, graph_iter, out):
+        metric = None 
+        self.metric = 'accuracy' if (self.metric=='accuracy' or self.graph.num_class>2) else 'auc'
+        if self.model_name == 'ourModel' and self.metric == 'accuracy':
+            if self.warm_up:
+                metric = cal_accuracy(graph_iter.y[graph_iter.train_index_A], out[graph_iter.train_index_A])
+            else:
+                if self.args.soft_flag:
+                    metric = cal_accuracy(graph_iter.y[graph_iter.train_index_B], out[-1, graph_iter.train_index_B, :])
+                else:
+                    metric = cal_accuracy(graph_iter.y[graph_iter.train_index_B], out[graph_iter.train_index_B])
+        elif self.model_name == 'ourModel' and self.metric == 'auc':
+            if self.warm_up:
+                pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index_A], out[graph_iter.train_index_A])
+            else:
+                if self.args.soft_flag:
+                    pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index_B], out[-1, graph_iter.train_index_B, :])
+                else:
+                    pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index_B], out[graph_iter.train_index_B])
+        else:
+            if self.metric == 'accuracy':
+                metric = cal_accuracy(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
+            else:
+                pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
+        
+        return metric
+    
+    
+    def train(self, wandb_record=False):
         model_iter = self.model 
         # graph_iter = self.training_graph 
         graph_iter = self.graph 
         
-        self.lr = 0.005
         optimizer = SGD(model_iter.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         # scheduler = 
         # criterion = FocalLoss()
@@ -483,7 +509,7 @@ class Trainer:
         
         # warm_up
         if self.warm_up:
-            self.warm_up_try(5)
+            self.warm_up_try(5, wandb_record)
             # after warm_up 
             self.warm_up = False
             model_iter = load_model(self.model_name, graph_iter, self.args)
@@ -524,40 +550,17 @@ class Trainer:
             out, loss = self.cal_loss(model_name=self.model_name, model=model_iter, graph=graph_iter, criterion=criterion, record=[loss_list, pseudo_loss_list, muti_layer_loss_list])
             
             loss.backward()
-            par_x = model_iter.convs[0].par_x
-            par_y = model_iter.convs[0].par_y
-            par_m = model_iter.convs[0].par_m
-            par_n = model_iter.convs[0].par_n
+            # par_x = model_iter.convs[0].par_x
+            # par_y = model_iter.convs[0].par_y
+            # par_m = model_iter.convs[0].par_m
+            # par_n = model_iter.convs[0].par_n
             # par_m = torch.flip(model_iter.convs[0].par_m, dims=[2]).permute(1,0,2)
             # par_n = torch.flip(model_iter.convs[0].par_n, dims=[2]).permute(1,0,2)
             optimizer.step()
             # loss_list.append([groundtruth_loss.item(), 0])
             
             # calculate metric on validation data and training data
-            metric = None 
-            self.metric = 'accuracy' if (self.metric=='accuracy' or self.graph.num_class>2) else 'auc'
-            if self.model_name == 'ourModel' and self.metric == 'accuracy':
-                if self.warm_up:
-                    metric = cal_accuracy(graph_iter.y[graph_iter.train_index_A], out[graph_iter.train_index_A])
-                else:
-                    if self.args.soft_flag:
-                        metric = cal_accuracy(graph_iter.y[graph_iter.train_index_B], out[-1, graph_iter.train_index_B, :])
-                    else:
-                        metric = cal_accuracy(graph_iter.y[graph_iter.train_index_B], out[graph_iter.train_index_B])
-            elif self.model_name == 'ourModel' and self.metric == 'auc':
-                if self.warm_up:
-                    pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index_A], out[graph_iter.train_index_A])
-                else:
-                    if self.args.soft_flag:
-                        pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index_B], out[-1, graph_iter.train_index_B, :])
-                    else:
-                        pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index_B], out[graph_iter.train_index_B])
-            else:
-                if self.metric == 'accuracy':
-                    metric = cal_accuracy(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
-                else:
-                    pred, metric = cal_auc_score(graph_iter.y[graph_iter.train_index], out[graph_iter.train_index])
-                    
+            metric = self.cal_train_metric(graph_iter, out)
             metric_list.append(metric)
             pseudolabel_num.append(torch.sum(graph_iter.node_pseudolabel >= 0).item())
             
@@ -574,7 +577,12 @@ class Trainer:
                 best_model_iter = model_iter
                 best_test_pred_logits = test_pred_logits
                 
-            
+            if wandb_record:
+                dict_to_log={"train_metric": metric,
+                             "train_loss": loss, 
+                             "valid_metric": val_metric,
+                             "test_metric": test_metric,}
+                wandb.log(dict_to_log)
             
             if self.stopper.early_stop(epoch, val_metric):
                 
@@ -600,19 +608,18 @@ class Trainer:
                 # break 
                 # out = best_model_iter(graph_iter)  
                 
-                if self.model_name == 'mlp' or self.model_name == 'GCN':
+                if self.model_name not in ['ourModel', 'ourModel_basis']:
                     break    
                 
                 # if len(best_val_metric_list)<=1 or best_val_metric_iter > np.max(best_val_metric_list):
                 if len(best_val_metric_list)>1:
-                    print(torch.mean(1.*(graph.y[graph.label_confidence>0.4]==graph.edge_pseudolabel[graph.label_confidence>0.4])))
+                    print(torch.mean(1.*(graph_iter.y[graph_iter.label_confidence>0.4]==graph_iter.edge_pseudolabel[graph_iter.label_confidence>0.4])))
                 
                 # pseudolabeling
                 self.update_train_data(best_model_iter, iteration_count)
                 
                 
                 if self.warm_up:
-                    # 如果涉及多轮重启则需要改动，此处默认使用最后一次的图
                     self.warm_up = False
                 else:
                     pass
@@ -629,20 +636,17 @@ class Trainer:
                 self.stopper.reset()
                 # N = torch.sum(self.training_graph.node_pseudolabel>=0).item()
                 N = torch.sum(self.graph.node_pseudolabel>=0).item()
-                if N == progress_bar.n:
-                    counter = counter + 1
-                    if counter>5:
-                        break
-                else:
-                    counter = 0
+                # if N == progress_bar.n:
+                counter = counter + 1
+                if counter>4:
+                    break
+                # else:
+                    # counter = 0
                 # add_num_list.append(add_num_obs[0])
                     
                     
                     # node_labels_pseudo_acc, node_labels_for_message_passing_acc, edge_acc = self.cal_edge_node_accuracy()
                     # print(f'node_labels_pseudo_acc: {node_labels_pseudo_acc}, node_labels_for_message_passing_acc: {node_labels_for_message_passing_acc}, edge_acc: {edge_acc}\n')
-                
-
-                    
 
             
             progress_bar.set_description(f'Train accuracy: {metric}, Loss:{loss.item()}, AUC:{metric}')
@@ -652,8 +656,8 @@ class Trainer:
         
         
         
-        if not os.path.exists(utils_data_pt):
-            os.mkdir(utils_data_pt)
+        # if not os.path.exists(utils_data_pt):
+        #     os.mkdir(utils_data_pt)
             
         # with open(os.path.join(utils_data_pt, 'muti_layer_loss_list.pkl'), 'wb') as f:
         #     pickle.dump(muti_layer_loss_list, f)
@@ -668,6 +672,8 @@ class Trainer:
         # np.save(os.path.join(utils_data_pt, 'pseudo_loss.npy'), pseudo_loss_list)
         # np.save(os.path.join(utils_data_pt, 'muti_layer_loss_list.npy'), muti_layer_loss_list)
         # np.save(os.path.join(utils_data_pt, 'edge_status.npy'), self.edge_status_list)
+        if wandb_record:
+            wandb.log({'final': np.max(best_val_metric_list[1:])})
         print(best_val_metric_list)
         # np.save(os.path.join(utils_data_pt, 'best_val_metric_list.npy'), best_val_metric_list)
         # np.save(os.path.join(utils_data_pt, 'final_accuracy.npy'), np.array([self.best_test_metric]))
@@ -679,11 +685,11 @@ class Trainer:
         # np.save(os.path.join(utils_data_pt, 'edge_acc_list.npy'), edge_acc_list)
         # np.save(os.path.join(utils_data_pt, 'edge_label_list.npy'), edge_label_list)
         
-        with open('data_save_dic.json', 'w') as f:
-            json.dump(self.data_save_dic, f, indent=4)  
+        # with open('data_save_dic.json', 'w') as f:
+        #     json.dump(self.data_save_dic, f, indent=4)  
         
-        with open(os.path.join(utils_data_pt, 'setting.yaml'), 'w') as f:
-            yaml.dump(vars(args), f)
+        # with open(os.path.join(utils_data_pt, 'setting.yaml'), 'w') as f:
+        #     yaml.dump(vars(args), f)
     
         return self.best_test_metric
     
@@ -711,7 +717,7 @@ class Trainer:
             vote_model = load_model('mlp', self.graph, self.args)
             vote_model.to(device)
             vote_model.train()
-            optimizer = Adam(vote_model.parameters(), lr=self.lr, weight_decay=self.weight_decay) 
+            optimizer = SGD(vote_model.parameters(), lr=self.lr, weight_decay=self.weight_decay) 
             # criterion = FocalLoss()
             criterion = nn.CrossEntropyLoss()
             
@@ -789,31 +795,34 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='yelp-chi')
-    parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--gpu', type=int, default=5)
     
     # hyper-parameter
+    # for basis
+    parser.add_argument('--h', type=float, default=0.2)
+    
     # for autoencoder
     parser.add_argument('--autoencoder_weight', type=float, default=0.01)
     # parser.add_argument('--embedding_dim', type=float, default=10)
     # for train
     parser.add_argument('--warm_up', type=bool, default=True)
-    parser.add_argument('--upper_bound', type=bool, default=False)
+    parser.add_argument('--upper_bound', type=bool, default=True)
     parser.add_argument('--main_loss_weight', type=int, default=0.7)
     parser.add_argument('--A_B_ratio', type=int, default=0.5)
     # parser.add_argument('--noise_rate', type=float, default=0.35)
     # for flexmatch
-    parser.add_argument('--flex_batch', type=float, default=64)
+    # parser.add_argument('--flex_batch', type=float, default=64)
     parser.add_argument('--flexmatch_weight', type=float, default=0.6)
-    parser.add_argument('--node_threshold', type=float, default=0.5)
-    parser.add_argument('--edge_threshold', type=float, default=0.5)
+    parser.add_argument('--node_threshold', type=float, default=0.75)
+    parser.add_argument('--edge_threshold', type=float, default=0.7)
     # for ups
-    parser.add_argument('--no_uncertainty', type=bool, default=False)
-    parser.add_argument('--temp_nl', type=float, default=2)
-    parser.add_argument('--kappa_p', type=float, default=0.05)
-    parser.add_argument('--kappa_n', type=float, default=0.005)
-    parser.add_argument('--tau_p', type=float, default=0.8)
-    parser.add_argument('--tau_n', type=float, default=0.05)
-    parser.add_argument('--class_blnc', type=int, default=3)
+    # parser.add_argument('--no_uncertainty', type=bool, default=False)
+    # parser.add_argument('--temp_nl', type=float, default=2)
+    # parser.add_argument('--kappa_p', type=float, default=0.05)
+    # parser.add_argument('--kappa_n', type=float, default=0.005)
+    # parser.add_argument('--tau_p', type=float, default=0.8)
+    # parser.add_argument('--tau_n', type=float, default=0.05)
+    # parser.add_argument('--class_blnc', type=int, default=3)
     # for dataset 
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--train_ratio', type=float, default=0.2)
@@ -823,15 +832,14 @@ if __name__ == "__main__":
     parser.add_argument('--metric', type=str, default='auc')
     parser.add_argument('--dataset_balanced', type=bool, default=False)
     # for model
-    parser.add_argument('--model_name', type=str, default='ourModel_basis') # also the embedding dimension of encoder
+    parser.add_argument('--model_name', type=str, default='ourModel') # also the embedding dimension of encoder
     # parser.add_argument('--mask_edge_flag', action='store_true', default=True) # mask the edges         (deprecated)
     parser.add_argument('--hidden_dim', type=int, default=32) # also the embedding dimension of encoder
     parser.add_argument('--num_layers', type=int, default=3)
     parser.add_argument('--dropout', type=float, default=0.3)
     parser.add_argument('--soft_flag', type=bool, default=False)
-    parser.add_argument('--basis_flag', type=bool, default=True) 
     # for optimizer
-    parser.add_argument('--lr', type=float, default=0.01)
+    parser.add_argument('--lr', type=float, default=1)
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--weight_decay', type=float, default=0.001)
     # parser.add_argument('--weight_decay', type=float, default=0.0005)
@@ -839,60 +847,26 @@ if __name__ == "__main__":
     # utils_data_pt = './utils_data/new_model_DE'
     
     args = parser.parse_args()
+    args.basis_flag = True if args.model_name=='ourModel_basis' else False
     
     seed = args.seed
     random.seed(seed)  
     torch.manual_seed(seed)  
     torch.cuda.manual_seed_all(seed) 
     
-    
     dataset = load_dataset(args.dataset)
     utils_data_pt = f'./utils_data/{args.model_name}_{args.dataset}_{seed}_A_B_random_{"soft" if args.soft_flag else "hard"}' if not args.upper_bound else f'./utils_data/{args.model_name}_upperBound_{args.dataset}'
     # utils_data_pt = f'./utils_data/{args.model_name}_decoupled_{args.dataset}' 
     
-    
     split_dataset_balanced(dataset, args)
     graph = prepocessing(dataset)
     
-    print("====================================================")
-    if directed_check(graph):
-        print("Undirected!")
-    else:
-        print('Directed!')
-    print(f'Dataset: {args.dataset}')
-    print(f'To test upper bound? {"Yes" if args.upper_bound else "No"}')
-    print("====================================================")
-    
     model = load_model(args.model_name, graph, args)
-    
     if args.model_name == 'ourModel':
         model = load_model('mlp', graph, args)
     
-    # multi-class
-    # if graph.num_class > 2:
-    #     args.node_threshold = args.node_threshold * args.node_threshold
-    #     args.edge_threshold = args.edge_threshold * args.edge_threshold
-    
-    # model = GCN(input_dim=graph.num_features
-    #             output_dim=graph.num_class,
-    #             hidden_dim=args.hidden_dim, 
-    #              num_layers=args.num_layers,
-    #              dropout=args.dropout)
     print(args.soft_flag)
-    trainer = Trainer(graph, model, device_num=args.gpu, model_name=args.model_name,
-                      lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay,
-                      metric=args.metric,
-                      flex_batch=args.flex_batch,
-                      flexmatch_weight=args.flexmatch_weight,
-                      autoencoder_weight=args.autoencoder_weight,
-                      args=args)
-    
-    # print(f'Noise rate: {args.noise_rate}')
-    
-    # if args.warm_up and args.model_name == 'ourModel':
-    #     trainer.vote_to_split()
-    
-
+    trainer = Trainer(graph, model, args=args)
     
     acc = trainer.train()
     

@@ -79,11 +79,11 @@ class myConv_basis(SAGEConv):
         # cross_weight = nn.Parameter(cross_weight)   
         # passing_function
         self.cross_basis_matrix = self.cross_basis_matrix.to(device)
-        passing_fucntion = torch.einsum('...i,...ijk->...jk', cross_weight, self.cross_basis_matrix)
+        passing_function = torch.einsum('...i,...ijk->...jk', cross_weight, self.cross_basis_matrix)
         # passing_fucntion = nn.Parameter(passing_fucntion)
         
         self.cross_weight = cross_weight
-        self.passing_function = passing_fucntion
+        self.passing_function = passing_function
         self.par_n = par_n
         self.par_m = par_m 
         
@@ -129,7 +129,7 @@ class myConv_basis(SAGEConv):
         else:
             inputs, src_index, dst_index = self.select_edge(inputs, index)
             inputs = self.passing(inputs, src_index, dst_index)
-            return scatter_mean(inputs, index, dim=0, dim_size=dim_size)
+            return scatter_mean(inputs, dst_index, dim=0, dim_size=dim_size)
 
     # def set_node_confidence(self, logits):
     #     self.node_confidence = torch.softmax(logits, dim=1) 

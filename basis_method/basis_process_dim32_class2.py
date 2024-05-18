@@ -7,7 +7,9 @@ from scipy.stats import ortho_group
 #basis_num 基数量
 #h 对角线加的值
 
-def basis_process_dim32_class2(basis_dim: int = 32, basis_num: int = 4, h: float = 0.01) -> np:
+def basis_process_dim32_class2(basis_dim: int = 32, basis_num: int = 4, h: float = 0.01, seed=86) -> np:
+    np.random.seed(seed)
+    
     # Generate Involutory Matrix list
     identity_matrix = np.eye(basis_dim)
     involutory_list = []

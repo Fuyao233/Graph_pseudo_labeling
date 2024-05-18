@@ -64,7 +64,7 @@ def train(model, graph, device):
     test_index = graph['test_index']
     epoch = 200
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr = 0.01, momentum = 0.9)
+    optimizer = torch.optim.Adam(model.parameters(), lr = 0.01, momentum = 0.9)
     # scheduler = torch.lr_scheduler.StepLR(optimizer, step_size = 100, gamma = 0.1)
     
     best_model = None 

@@ -123,7 +123,8 @@ class ourModel_basis(nn.Module):
                  num_layers,
                  dropout,
                  basis_num=4,
-                 soft_flag = True):
+                 soft_flag = True,
+                 h=0.075):
         
             super(ourModel_basis, self).__init__()
         
@@ -131,7 +132,7 @@ class ourModel_basis(nn.Module):
             self.num_class = output_dim
             self.basis_num = basis_num
             self.basis_dim = hidden_dim
-            basis_matrix = basis_process_dim32_class2(basis_dim=hidden_dim, basis_num=basis_num)
+            basis_matrix = basis_process_dim32_class2(basis_dim=hidden_dim, basis_num=basis_num, h=h)
             self.cross_basis_matrix = self.produce_cross_basis(basis_matrix)
             
             self.convs = torch.nn.ModuleList(
@@ -162,6 +163,9 @@ class ourModel_basis(nn.Module):
             # get inverse
             inv_basis_matrix = torch.inverse(basis_matrix)
             
+            basis_matrix = basis_matrix / torch.linalg.eigvals(basis_matrix).real.max()
+            inv_basis_matrix = inv_basis_matrix / torch.linalg.eigvals(inv_basis_matrix).real.max()
+            
             # get combination_matrix c*c*N*d*d
             c = self.num_class 
             N = self.basis_num 
@@ -173,8 +177,10 @@ class ourModel_basis(nn.Module):
                         combine_matrix[i][j] = torch.eye(d).unsqueeze(0).expand(N, -1, -1)
                     else:                        
                         combine_matrix[i][j] = torch.einsum('bij,bjk->bik', basis_matrix[i], inv_basis_matrix[j])
+            
             # cross 
             cross_basis = torch.empty((c, c, 2**(N//2), d, d))
+            scale_weight = torch.empty((c, c, 2**(N//2), d, d))
             for i in range(c):
                 for j in range(c):
                     if i == j:
@@ -196,7 +202,7 @@ class ourModel_basis(nn.Module):
                                 result_matrix = torch.matmul(result_matrix, matrix)
                             
                             cross_basis[i][j][idx] = result_matrix
-            
+                            
             return cross_basis
         
         def produce_message_passing_function(self):

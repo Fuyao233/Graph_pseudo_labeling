@@ -10,40 +10,49 @@ from tqdm import tqdm
 from utils import enable_dropout, accuracy
 
 class Flexmatch:
-    def __init__(self, graph, prediction, node_threshold, edge_threshold, batch_size, warm_up):
+    def __init__(self, graph, prediction, node_threshold, edge_threshold):
         self.graph = graph
         self.prediction = prediction
         self.node_threshold = node_threshold 
         self.edge_threshold = edge_threshold 
-        self.batch_size = batch_size
-        self.warm_up = warm_up
 
-    def is_warm_up(self):
-        warm_up_flags = torch.zeros(self.graph.num_class)
-        criterion = torch.sum(self.graph.pseudolabel==-1)
-        for i, _ in enumerate(warm_up_flags):
-            warm_up_flags[i] = torch.sum(self.graph.pseudolabel==i) < criterion # 'True' means it needs warm up
-        return warm_up_flags 
 
-    def get_sigma_c(self):
-        unlabel_prediction = self.prediction[self.graph.pseudolabel==-1]
-        maximum, indices = unlabel_prediction.max(dim=1)
-        sigma_c = torch.zeros(self.graph.num_class)
-        for i, _ in enumerate(sigma_c):
-            sigma_c[i] = torch.sum((indices==i)*(maximum>self.tau))
-        return sigma_c
+    # def is_warm_up(self):
+    #     warm_up_flags = torch.zeros(self.graph.num_class)
+    #     criterion = torch.sum(self.graph.pseudolabel==-1)
+    #     for i, _ in enumerate(warm_up_flags):
+    #         warm_up_flags[i] = torch.sum(self.graph.pseudolabel==i) < criterion # 'True' means it needs warm up
+    #     return warm_up_flags 
 
-    def get_batch(self):
-        unlabeled_indices = torch.where(self.graph.pseudolabel==-1)[0]
-        selected_indices = None
-        if len(unlabeled_indices) <= self.batch_size:
-            selected_indices = unlabeled_indices
-        else:
-            shuffled_indices = torch.randperm(len(unlabeled_indices))[:self.batch_size]
-            selected_indices = unlabeled_indices[shuffled_indices]
-        res = torch.zeros_like(self.graph.pseudolabel)
-        res[selected_indices] = 1
-        return res==1 # 'True' means selected sample 
+    # def get_sigma_c(self):
+    #     unlabel_prediction = self.prediction[self.graph.pseudolabel==-1]
+    #     maximum, indices = unlabel_prediction.max(dim=1)
+    #     sigma_c = torch.zeros(self.graph.num_class)
+    #     for i, _ in enumerate(sigma_c):
+    #         sigma_c[i] = torch.sum((indices==i)*(maximum>self.tau))
+    #     return sigma_c
+
+    # def get_batch(self):
+    #     unlabeled_indices = torch.where(self.graph.pseudolabel==-1)[0]
+    #     selected_indices = None
+    #     if len(unlabeled_indices) <= self.batch_size:
+    #         selected_indices = unlabeled_indices
+    #     else:
+    #         shuffled_indices = torch.randperm(len(unlabeled_indices))[:self.batch_size]
+    #         selected_indices = unlabeled_indices[shuffled_indices]
+    #     res = torch.zeros_like(self.graph.pseudolabel)
+    #     res[selected_indices] = 1
+    #     return res==1 # 'True' means selected sample 
+    
+    def cal_threshold(self, confidence, y_hat, num_class, kernel=lambda x: x):
+        beta = torch.zeros(num_class)
+        sigma = torch.zeros(num_class)
+        for c in range(num_class):
+            sigma[c] = torch.sum(torch.logical_and(y_hat==c, confidence>confidence.mean()))
+        beta = sigma / sigma.max()
+        
+        return kernel(beta) * self.node_threshold
+
     
     def select(self):
         # print(f'Node_threshold: {self.node_threshold}; Edge_threshold: {self.edge_threshold}')
@@ -55,10 +64,13 @@ class Flexmatch:
         
         mean = confidence[self.graph.unlabeled_index].mean()
         std = confidence[self.graph.unlabeled_index].std()
-        node_threshold = mean+std 
-        self.graph.node_threshold = (mean+std).detach() 
+        # node_threshold = self.cal_threshold(confidence, y_hat, self.graph.num_class)
+        node_threshold = mean
+        
+        # node_threshold = mean+std 
+        # self.graph.node_threshold = (mean+std).detach() 
         # self.graph.edge_threshold = (mean+std).detach() TODO: 看看可视化动态图，分析这个阈值合不合理
-        self.graph.edge_threshold = 0
+        # self.graph.edge_threshold = 0
         
         print(f'Node_threshold: {node_threshold}')
         self.graph.label_confidence = confidence.detach().clone()
@@ -92,9 +104,9 @@ class Flexmatch:
         # self.graph.node_pseudolabel_indices_B[node_pseudolabel_indices[random_indices[len(node_pseudolabel_indices)//2:]]] = True 
         
         self.graph.label_confidence[node_pseudolabel_indices] = 1.
-        self.graph.edge_pseudolabel[node_pseudolabel_indices] = self.graph.node_pseudolabel[node_pseudolabel_indices]
+        self.graph.edge_pseudolabel[node_pseudolabel_indices] = self.graph.y[node_pseudolabel_indices] # 直接给正确标签
         
-        node_pseudo_label_acc = torch.mean((y_hat[node_indices] == self.graph.y[node_indices])*1.)
+        node_pseudo_label_acc = torch.mean((self.graph.edge_pseudolabel[node_indices] == self.graph.y[node_indices])*1.)
         edge_pseudo_label_acc = torch.mean((y_hat[edge_indices] == self.graph.y[edge_indices])*1.)
         
         if torch.sum(node_indices)==0:

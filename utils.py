@@ -63,7 +63,8 @@ def load_model(model_name, graph, args):
                    output_dim=graph.num_class,
                    hidden_dim=args.hidden_dim,
                    num_layers=args.num_layers,
-                   dropout=args.dropout)
+                   dropout=args.dropout,
+                   h=args.h)
     
     else:
         assert model_name in ['mlp', 'ourModel', 'GCN', 'ourModel_basis']
