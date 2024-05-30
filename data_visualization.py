@@ -1,5 +1,5 @@
 # 4.4 数据可视化
-from utils import load_dataset, prepocessing, DataLoader_folder
+from utils import load_dataset, preprocessing, DataLoader_folder
 import torch 
 import numpy as np
 import os 
@@ -10,7 +10,7 @@ from plotly.offline import plot
 # 观察不同代节点划分
 def visulization_split(graph_name, layout, state_dic, save_name):
     print(save_name)
-    graph = prepocessing(load_dataset(graph_name))
+    graph = preprocessing(load_dataset(graph_name))
     G = nx.Graph()
     G.add_nodes_from(range(graph.num_nodes))
     G.add_edges_from(graph.edge_index.T.numpy())
@@ -78,7 +78,7 @@ def visulization_split(graph_name, layout, state_dic, save_name):
     fig.write_image(os.path.join('imgs', f'{save_name}_normal.png'))
 
 def draw_ground_truth(graph_name):
-    graph = prepocessing(load_dataset(graph_name))
+    graph = preprocessing(load_dataset(graph_name))
     G = nx.Graph()
     G.add_nodes_from(range(graph.num_nodes))
     G.add_edges_from(graph.edge_index.T.numpy())

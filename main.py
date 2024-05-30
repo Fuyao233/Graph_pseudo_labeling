@@ -92,7 +92,7 @@ def main():
     # utils_data_pt = f'./utils_data/{args.model_name}_decoupled_{args.dataset}' 
     
     split_dataset_balanced(dataset, args)
-    graph = prepocessing(dataset)
+    graph = preprocessing(dataset)
     
     model = load_model(args.model_name, graph, args)
     if args.model_name == 'ourModel':

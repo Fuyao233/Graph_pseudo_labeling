@@ -15,7 +15,7 @@ class Encoder(nn.Module):
         
     def forward(self,x):
         x = self.fc(x)
-        x = self.relu(x)
+        # x = self.relu(x)
         # x = self.fc1(x)
         # x = self.relu(x)
         # x = self.fc2(x)
@@ -47,7 +47,7 @@ class Decoder(nn.Module):
     
     def forward(self,x):
         x = self.fc(x)
-        x = self.relu(x)
+        # x = self.relu(x)
         # x = self.fc1(x)
         # x = self.relu(x)
         # x = self.fc2(x)

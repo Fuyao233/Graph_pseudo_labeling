@@ -28,7 +28,7 @@ def main():
 
 
     split_dataset_balanced(dataset, args)
-    graph = prepocessing(dataset)
+    graph = preprocessing(dataset)
 
     print("====================================================")
     if directed_check(graph):

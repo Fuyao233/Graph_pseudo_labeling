@@ -1,6 +1,6 @@
 from Non_Homophily_Large_Scale.dataset import *
 from torch_geometric.data import Data
-from model import GCN, ourModel, MLP, ourModel_basis
+from model import GCN, ourModel, MLP, ourModel_basis, H2GCN
 import random 
 from sklearn.metrics import roc_auc_score 
 import torch
@@ -10,11 +10,13 @@ import networkx as nx
 import plotly.graph_objects as go
 from plotly.offline import plot
 import yaml
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
 
 # datanames = ['twitch-e', 'fb100', 'ogbn-proteins', 'deezer-europe', 'arxiv-year', 'pokec', 'snap-patents',
 #              'yelp-chi', 'ogbn-arxiv', 'ogbn-products', 'Cora', 'CiteSeer', 'PubMed', 'chameleon', 'cornell',
 #              'film', 'squirrel', 'texas', 'wisconsin', 'genius', 'twitch-gamer', 'wiki']
-datanames = ['fb100']
+datanames = ['yelp-chi', 'deezer-europe', 'cornell', 'cornell', 'texas', 'wiconsin', 'chameleon', 'squirrel']
 
 def load_dataset(name):
     return load_nc_dataset(name)
@@ -58,14 +60,22 @@ def load_model(model_name, graph, args):
                    num_layers=args.num_layers,
                    dropout=args.dropout)
     
-    elif model_name == 'ourModel_basis':
-        return ourModel_basis(input_dim=graph.num_features,
+    elif model_name == 'GIN':
+        return GCN(input_dim=graph.num_features,
                    output_dim=graph.num_class,
                    hidden_dim=args.hidden_dim,
                    num_layers=args.num_layers,
-                   dropout=args.dropout,
-                   h=args.h)
-    
+                   dropout=args.dropout)
+    elif model_name == 'GraphSAGE':
+        return GCN(input_dim=graph.num_features,
+                   output_dim=graph.num_class,
+                   hidden_dim=args.hidden_dim,
+                   num_layers=args.num_layers,
+                   dropout=args.dropout)    
+    elif model_name == 'H2GCN':
+        return H2GCN(feat_dim=graph.num_features,
+            hidden_dim=args.hidden_dim,
+            class_dim=graph.num_class)
     else:
         assert model_name in ['mlp', 'ourModel', 'GCN', 'ourModel_basis']
 
@@ -221,14 +231,14 @@ def split_dataset_balanced(dataset, args):
         unlabel_ratio: Fraction of nodes to be used as unlabeled.
     """
     
-    balanced_flag = args.dataset_balanced
+    balanced_flag = args.dataset_balanced if 'dataset_balanced' in args else False
     
     # input and check
-    train_ratio = args.train_ratio if 'train_ratio' in args else None 
-    test_ratio = args.test_ratio if 'test_ratio' in args else None 
-    val_ratio = args.val_ratio if 'val_ratio' in args else None 
-    unlabel_ratio = args.unlabel_ratio if 'unlabel_ratio' in args else None 
-    train_A_B_ratio = args.A_B_ratio if 'A_B_ratio' in args else None
+    train_ratio = args.train_ratio if 'train_ratio' in args else 0.2 
+    test_ratio = args.test_ratio if 'test_ratio' in args else 0.2 
+    val_ratio = args.val_ratio if 'val_ratio' in args else 0.2 
+    unlabel_ratio = args.unlabel_ratio if 'unlabel_ratio' in args else 0.4 
+    train_A_B_ratio = args.A_B_ratio if 'A_B_ratio' in args else 0.5
     
     if test_ratio is None:
         test_ratio = 1 - train_ratio - (0 if val_ratio is None else val_ratio) - (0 if unlabel_ratio is None else unlabel_ratio)
@@ -308,8 +318,27 @@ def split_dataset_balanced(dataset, args):
         if len(dataset) == 1:
             break
 
+def TSNE_visualization(x,y,n_dim):
+    tsne = TSNE(n_components=n_dim, random_state=0)
+    X_transformed = tsne.fit_transform(X)
 
-def prepocessing(dataset):
+    # 根据n_dim的值选择绘图类型
+    if n_dim == 2:
+        for idx, cl in enumerate(np.unique(y)):
+            plt.scatter(X_transformed[y == cl, 0], X_transformed[y == cl, 1], label=f'Class {cl}')
+        plt.title('2D t-SNE Visualization')
+    elif n_dim == 3:
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        for idx, cl in enumerate(np.unique(y)):
+            ax.scatter(X_transformed[y == cl, 0], X_transformed[y == cl, 1], X_transformed[y == cl, 2], label=f'Class {cl}')
+        plt.title('3D t-SNE Visualization')
+
+    plt.legend(loc='best')
+    plt.show()
+
+
+def preprocessing(dataset):
     data = Data()
     graph = dataset[0][0]
     label = dataset.label

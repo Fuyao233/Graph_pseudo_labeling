@@ -1,23 +1,12 @@
-#!/bin/bash
+dataset_list=('yelp-chi' 'deezer-europe' 'cornell' 'texas' 'wiconsin' 'chameleon' 'squirrel')
+# dataset_list=('wisconsin')
+# model_list=('GraphSAGE' 'ourModel' 'H2GCN')
+model_list=('H2GCN')
+# model_list=('mlp' 'GCN' 'GIN' )
 
-# 定义dataset参数列表
-# datasets=("yelp-chi" "squirrel" "chameleon" "texas" "cornell" "wisconsin")
-datasets=("chameleon" "texas" "cornell" "wisconsin")
-
-# 定义model_name参数列表
-# model_names=("mlp" "GCN" "ourModel")
-model_names=("ourModel")
-
-seed_list=(0)
-
-
-# 遍历所有dataset
-for dataset in "${datasets[@]}"; do
-    for model in "${model_names[@]}"; do
-        for seed in "${seed_list[@]}"; do
-
-                python train.py --dataset "$dataset" --model_name "$model" --seed  "$seed" 
-
-        done
+for dataset in "${dataset_list[@]}"; do
+    for model in "${model_list[@]}"; do
+        echo "$dataset"
+        python train.py --dataset "$dataset" --model_name "$model"  
     done
 done

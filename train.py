@@ -19,6 +19,34 @@ import random
 import json
 import wandb
 
+def eval(model, graph, keyword='test', metric='auc'):
+    model.eval()
+    key = None
+    if keyword == 'test':
+        key = 'test_index'
+    elif keyword == 'val':
+        key = 'val_index'
+    else:
+        raise ValueError('Wrong keyword!')
+    
+    with torch.no_grad():
+        logits = model(graph)
+        y_hat = torch.argmax(logits, dim=1)
+            
+        if metric == 'accuracy':
+            metric = torch.mean((y_hat[graph[key]]==graph.y[graph[key]]).float()).item()
+        elif metric == 'auc':
+            # metric = roc_auc_score(self.graph.y[self.graph[key]].cpu().numpy(),torch.softmax(logits[self.graph[key]], dim=1)[:,1].cpu().detach().numpy()) 
+            metric = eval_rocauc(graph.y[graph[key]].reshape((-1,1)), logits[graph[key]])
+        else:
+            assert metric in ['accuracy', 'auc']
+        
+        # if keyword == 'test':
+        #     print(f'{key} {metric} is {metric:.3f}')
+
+    # auc_score = roc_auc_score(graph.y[graph[key]].cpu().numpy(),torch.softmax(logits[graph[key]],dim=1)[:,1].cpu().detach().numpy()) 
+    return y_hat, metric
+
 class Trainer:
     def __init__(self, graph, model, args,
                  select_method='flexmatch') :
@@ -73,33 +101,7 @@ class Trainer:
         
         self.stopper = EarlyStopper(max_iter=300)
     
-    def eval(self, model, graph, keyword='test', metric='auc'):
-        model.eval()
-        key = None
-        if keyword == 'test':
-            key = 'test_index'
-        elif keyword == 'val':
-            key = 'val_index'
-        else:
-            raise ValueError('Wrong keyword!')
-        
-        with torch.no_grad():
-            logits = model(graph)
-            y_hat = torch.argmax(logits, dim=1)
-             
-            if metric == 'accuracy':
-                metric = torch.mean((y_hat[self.graph[key]]==self.graph.y[self.graph[key]]).float()).item()
-            elif metric == 'auc':
-                # metric = roc_auc_score(self.graph.y[self.graph[key]].cpu().numpy(),torch.softmax(logits[self.graph[key]], dim=1)[:,1].cpu().detach().numpy()) 
-                metric = eval_rocauc(graph.y[graph[key]].reshape((-1,1)), logits[graph[key]])
-            else:
-                assert metric in ['accuracy', 'auc']
-            
-            # if keyword == 'test':
-            #     print(f'{key} {metric} is {metric:.3f}')
 
-        # auc_score = roc_auc_score(graph.y[graph[key]].cpu().numpy(),torch.softmax(logits[graph[key]],dim=1)[:,1].cpu().detach().numpy()) 
-        return y_hat, metric
     
     def if_edge_change(self):
         if len(self.edge_status_list)==0 or self.update_pipeline_flag == self.edge_status_list[-1]:
@@ -271,7 +273,7 @@ class Trainer:
         out = None 
         autoencoder_loss = None
         rec = None
-        if model_name == 'ourModel' or 'ourModel_basis':
+        if model_name=='ourModel' or model_name=='ourModel_basis':
             if self.warm_up or self.args.basis_flag==True:
                 out = model(graph)
             else:
@@ -320,13 +322,10 @@ class Trainer:
                 record[1].append(pseudolabel_loss.item())
                 loss = loss + self.flexmatch_weight*pseudolabel_loss     
         
-        elif model_name == 'GCN':
+        else:
             out = model(graph)
             loss = criterion(out[graph.train_index], graph.y[graph.train_index])
-        
-        else:
-            assert False
-        
+
         return out, loss
 
     def cal_edge_node_accuracy(self):
@@ -403,7 +402,7 @@ class Trainer:
                 optimizer.step()
                 
                 metric = cal_accuracy(graph.y[graph.train_index_A], out[graph.train_index_A])
-                _, val_metric = self.eval(model, graph, 'val', 'accuracy')
+                _, val_metric = eval(model, graph, 'val', 'accuracy')
                 
                 if val_metric > best_val_metric:
                     best_epoch = epoch
@@ -564,8 +563,8 @@ class Trainer:
             metric_list.append(metric)
             pseudolabel_num.append(torch.sum(graph_iter.node_pseudolabel >= 0).item())
             
-            val_pred_logits, val_metric = self.eval(model_iter, graph_iter, keyword='val', metric=self.metric)
-            test_pred_logits, test_metric = self.eval(model_iter, graph_iter, keyword='test', metric=self.metric)
+            val_pred_logits, val_metric = eval(model_iter, graph_iter, keyword='val', metric=self.metric)
+            test_pred_logits, test_metric = eval(model_iter, graph_iter, keyword='test', metric=self.metric)
             val_metric_list.append(val_metric)
             test_metric_list.append(test_metric)
 
@@ -608,8 +607,8 @@ class Trainer:
                 # break 
                 # out = best_model_iter(graph_iter)  
                 
-                if self.model_name not in ['ourModel', 'ourModel_basis']:
-                    break    
+                # if self.model_name not in ['ourModel', 'ourModel_basis']:
+                #     break    
                 
                 # if len(best_val_metric_list)<=1 or best_val_metric_iter > np.max(best_val_metric_list):
                 if len(best_val_metric_list)>1:
@@ -625,7 +624,7 @@ class Trainer:
                     pass
                 
                 edge_label_list.append(graph_iter.edge_pseudolabel.detach().cpu().numpy())
-                
+                np.save(f'res_record/{self.args.model_name}_{self.args.dataset}_edge_label.npy', np.array(edge_label_list))
                 
                 # restart
                 epoch = 0
@@ -691,7 +690,7 @@ class Trainer:
         # with open(os.path.join(utils_data_pt, 'setting.yaml'), 'w') as f:
         #     yaml.dump(vars(args), f)
     
-        return self.best_test_metric
+        return best_val_metric_list
     
     def vote_to_split(self):
         
@@ -741,7 +740,7 @@ class Trainer:
                 optimizer.step()
                 
                 metric = cal_accuracy(graph.y[train_indices_vote], out[train_indices_vote])
-                _, val_metric = self.eval(vote_model, graph, 'val', 'accuracy')
+                _, val_metric = eval(vote_model, graph, 'val', 'accuracy')
                 
                 if val_metric > best_val_metric:
                     best_val_metric = val_metric
@@ -794,8 +793,8 @@ class Trainer:
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='yelp-chi')
-    parser.add_argument('--gpu', type=int, default=5)
+    parser.add_argument('--dataset', type=str, default='deezer-europe')
+    parser.add_argument('--gpu', type=int, default=4)
     
     # hyper-parameter
     # for basis
@@ -806,7 +805,7 @@ if __name__ == "__main__":
     # parser.add_argument('--embedding_dim', type=float, default=10)
     # for train
     parser.add_argument('--warm_up', type=bool, default=True)
-    parser.add_argument('--upper_bound', type=bool, default=True)
+    parser.add_argument('--upper_bound', type=bool, default=False)
     parser.add_argument('--main_loss_weight', type=int, default=0.7)
     parser.add_argument('--A_B_ratio', type=int, default=0.5)
     # parser.add_argument('--noise_rate', type=float, default=0.35)
@@ -858,16 +857,22 @@ if __name__ == "__main__":
     utils_data_pt = f'./utils_data/{args.model_name}_{args.dataset}_{seed}_A_B_random_{"soft" if args.soft_flag else "hard"}' if not args.upper_bound else f'./utils_data/{args.model_name}_upperBound_{args.dataset}'
     # utils_data_pt = f'./utils_data/{args.model_name}_decoupled_{args.dataset}' 
     
-    split_dataset_balanced(dataset, args)
-    graph = prepocessing(dataset)
-    
-    model = load_model(args.model_name, graph, args)
-    if args.model_name == 'ourModel':
-        model = load_model('mlp', graph, args)
-    
-    print(args.soft_flag)
-    trainer = Trainer(graph, model, args=args)
-    
-    acc = trainer.train()
-    
+    res_record = []
+    for _ in range(5):
+        split_dataset_balanced(dataset, args)
+        graph = preprocessing(dataset)
+        
+        model = load_model(args.model_name, graph, args)
+        if args.model_name == 'ourModel':
+            model = load_model('mlp', graph, args)
+        
+        print(args.soft_flag)
+        trainer = Trainer(graph, model, args=args)
+        
+        acc = trainer.train()
+        res_record.append(acc)
+        
+    print(f'{np.mean(res_record)}±{np.std(res_record)}')
+    np.save(f'res_record/{args.model_name}_{args.dataset}_acc.npy', np.array(res_record))
+
     

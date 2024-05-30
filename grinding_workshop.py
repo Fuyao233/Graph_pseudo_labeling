@@ -1,6 +1,6 @@
 import torch
 from torch_geometric.data import Data
-from utils import load_dataset, split_dataset, prepocessing, EarlyStopper, find_edges, remove_edges
+from utils import load_dataset, split_dataset, preprocessing, EarlyStopper, find_edges, remove_edges
 from model import GCN, ourModel
 from tqdm import tqdm
 from torch.optim import Adam
@@ -64,7 +64,7 @@ def train(model, graph, device):
     test_index = graph['test_index']
     epoch = 200
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr = 0.01, momentum = 0.9)
+    optimizer = torch.optim.SGD(model.parameters(), lr = 0.01, momentum = 0.9)
     # scheduler = torch.lr_scheduler.StepLR(optimizer, step_size = 100, gamma = 0.1)
     
     best_model = None 
@@ -134,7 +134,7 @@ if __name__ == "__main__":
     dataset = load_dataset(args.dataset)
     
     split_dataset(dataset, args.train_ratio, args.test_ratio, args.val_ratio)
-    graph = prepocessing(dataset)
+    graph = preprocessing(dataset)
     model = MLP(graph.x.size()[1], 2, 32)
     train(model, graph,1)
     
