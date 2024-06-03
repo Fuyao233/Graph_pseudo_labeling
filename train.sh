@@ -1,7 +1,7 @@
-dataset_list=('yelp-chi' 'deezer-europe' 'cornell' 'texas' 'wiconsin' 'chameleon' 'squirrel')
+dataset_list=('cornell' 'texas' 'wiconsin' 'chameleon' 'squirrel' 'yelp-chi' 'deezer-europe' )
 # dataset_list=('wisconsin')
 # model_list=('GraphSAGE' 'ourModel' 'H2GCN')
-model_list=('H2GCN')
+model_list=('ourModel')
 # model_list=('mlp' 'GCN' 'GIN' )
 
 for dataset in "${dataset_list[@]}"; do

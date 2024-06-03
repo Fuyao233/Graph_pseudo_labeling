@@ -100,66 +100,17 @@ class Trainer:
         self.update_training_graph()
         
         self.stopper = EarlyStopper(max_iter=300)
-    
 
-    
-    def if_edge_change(self):
-        if len(self.edge_status_list)==0 or self.update_pipeline_flag == self.edge_status_list[-1]:
-            pass 
-        else:
-            # status stage changes
-            # use the graph achieving the best metric
-            # self.training_graph.train_index = self.best_graph.train_index.clone()
-            # self.training_graph.train_index_A = self.best_graph.train_index_A.clone()
-            # self.training_graph.train_index_B = self.best_graph.train_index_B.clone()
-            # self.training_graph.test_index = self.best_graph.test_index.clone()
-            # self.training_graph.val_index = self.best_graph.val_index.clone()
-            # self.training_graph.training_labels = self.best_graph.training_labels.clone()
-            # self.training_graph.node_pseudolabel = self.best_graph.node_pseudolabel.clone()
-            # self.training_graph.node_pseudolabel_indices_A = self.best_graph.node_pseudolabel_indices_A.clone()
-            # self.training_graph.node_pseudolabel_indices_B = self.best_graph.node_pseudolabel_indices_B.clone()
-            # self.training_graph.edge_pseudolabel = self.best_graph.edge_pseudolabel.clone()
-            # self.training_graph.homo_edge_flags = self.best_graph.homo_edge_flags.clone()
-            # self.training_graph.detected_edge_flags = self.best_graph.detected_edge_flags.clone()
-            
-            self.graph.train_index = self.best_graph.train_index.clone()
-            self.graph.train_index_A = self.best_graph.train_index_A.clone()
-            self.graph.train_index_B = self.best_graph.train_index_B.clone()
-            self.graph.test_index = self.best_graph.test_index.clone()
-            self.graph.val_index = self.best_graph.val_index.clone()
-            self.graph.training_labels = self.best_graph.training_labels.clone()
-            self.graph.node_pseudolabel = self.best_graph.node_pseudolabel.clone()
-            self.graph.node_pseudolabel_indices_A = self.best_graph.node_pseudolabel_indices_A.clone()
-            self.graph.node_pseudolabel_indices_B = self.best_graph.node_pseudolabel_indices_B.clone()
-            self.graph.edge_pseudolabel = self.best_graph.edge_pseudolabel.clone()
-            self.graph.homo_edge_flags = self.best_graph.homo_edge_flags.clone()
-            self.graph.detected_edge_flags = self.best_graph.detected_edge_flags.clone()
-    
-    def update_edge_flags(self):
-        # True denotes homo edge (under groudtruth and pseudo labels)
-        # False denotes unknow, they may be homo(undetected) or heterophily
-        
-        # in_node_labels = self.training_graph.training_labels[[self.training_graph.edge_index[0,:]]]
-        # out_node_labels = self.training_graph.training_labels[[self.training_graph.edge_index[1,:]]]
-        # self.training_graph.homo_edge_flags = torch.logical_and(in_node_labels == out_node_labels, torch.logical_and((in_node_labels>=0), (out_node_labels>=0)))
-        # self.training_graph.detected_edge_flags = torch.logical_and((in_node_labels>=0), (out_node_labels>=0))
-        pass
 
     def update_train_data(self, model, itr):
         prediction = torch.softmax(model(self.graph), dim=1)
         if self.method == 'flexmatch':
-            # dynamic threshold
-            # Flexmatch(self.graph, prediction, self.fixed_threshold if self.update_pipeline_flag-1==0 else self.fixed_threshold*self.fixed_threshold, self.flex_batch).select()
-            
-            # fixed threshold
             Flexmatch(self.graph, prediction, self.node_threshold, self.edge_threshold).select()
-            # UPS().select(self.args, self.graph, model, itr)
         
         if self.args.upper_bound is True: 
             self.graph.edge_pseudolabel = self.graph.y.clone()
             self.graph.propogated_confidence_from.fill_(1)
         
-        # self.update_training_labels()
         self.update_training_graph()
         
         self.global_iteration = self.global_iteration+1    
@@ -447,7 +398,6 @@ class Trainer:
         
         return metric
     
-    
     def train(self, wandb_record=False):
         model_iter = self.model 
         # graph_iter = self.training_graph 
@@ -693,8 +643,6 @@ class Trainer:
         return best_val_metric_list
     
     def vote_to_split(self):
-        
-        
         device = torch.cuda.current_device()
         # graph = self.training_graph
         graph = self.graph
@@ -793,8 +741,9 @@ class Trainer:
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='deezer-europe')
+    parser.add_argument('--dataset', type=str, default='texas')
     parser.add_argument('--gpu', type=int, default=4)
+    parser.add_argument('--save_root', type=str)
     
     # hyper-parameter
     # for basis
@@ -813,7 +762,7 @@ if __name__ == "__main__":
     # parser.add_argument('--flex_batch', type=float, default=64)
     parser.add_argument('--flexmatch_weight', type=float, default=0.6)
     parser.add_argument('--node_threshold', type=float, default=0.75)
-    parser.add_argument('--edge_threshold', type=float, default=0.7)
+    parser.add_argument('--edge_threshold', type=float, default=0.5)
     # for ups
     # parser.add_argument('--no_uncertainty', type=bool, default=False)
     # parser.add_argument('--temp_nl', type=float, default=2)
@@ -854,11 +803,10 @@ if __name__ == "__main__":
     torch.cuda.manual_seed_all(seed) 
     
     dataset = load_dataset(args.dataset)
-    utils_data_pt = f'./utils_data/{args.model_name}_{args.dataset}_{seed}_A_B_random_{"soft" if args.soft_flag else "hard"}' if not args.upper_bound else f'./utils_data/{args.model_name}_upperBound_{args.dataset}'
-    # utils_data_pt = f'./utils_data/{args.model_name}_decoupled_{args.dataset}' 
     
     res_record = []
     for _ in range(5):
+        save_path = os.path.join(args.save_root, f'{args.model_name}_{args.dataset}')
         split_dataset_balanced(dataset, args)
         graph = preprocessing(dataset)
         

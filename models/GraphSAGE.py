@@ -4,11 +4,11 @@ import torch
 from torch_geometric.nn import SAGEConv
 
 
-class GCN(nn.Module):
+class GraphSAGE(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers,
                  dropout):
         
-        super(GCN, self).__init__()
+        super(GraphSAGE, self).__init__()
         
         self.convs = torch.nn.ModuleList(
             [SAGEConv(in_channels=input_dim, out_channels=hidden_dim)] +

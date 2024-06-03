@@ -4,11 +4,11 @@ import torch
 from torch_geometric.nn import GINConv
 
 
-class GCN(nn.Module):
+class GIN(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers,
                  dropout):
         
-        super(GCN, self).__init__()
+        super(GIN, self).__init__()
         
         self.convs = torch.nn.ModuleList(
             [GINConv(in_channels=input_dim, out_channels=hidden_dim)] +

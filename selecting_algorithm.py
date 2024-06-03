@@ -64,14 +64,8 @@ class Flexmatch:
         
         mean = confidence[self.graph.unlabeled_index].mean()
         std = confidence[self.graph.unlabeled_index].std()
-        # node_threshold = self.cal_threshold(confidence, y_hat, self.graph.num_class)
         node_threshold = mean
-        
-        # node_threshold = mean+std 
-        # self.graph.node_threshold = (mean+std).detach() 
-        # self.graph.edge_threshold = (mean+std).detach() TODO: 看看可视化动态图，分析这个阈值合不合理
-        # self.graph.edge_threshold = 0
-        
+                
         print(f'Node_threshold: {node_threshold}')
         self.graph.label_confidence = confidence.detach().clone()
         self.graph.label_confidence[self.graph.train_index_A] = 1.
@@ -89,22 +83,14 @@ class Flexmatch:
             selected_node_indices = torch.where(node_unlabeled_index*(y_hat==c)*(confidence>node_threshold))[0]
             self.graph.node_pseudolabel[selected_node_indices] = c
             node_indices[selected_node_indices] = True
-        
-        # set all node_pseudolabel as part of train_index_A
-        # self.graph.label_confidence[node_indices] = 1.
-        
+                
         # split node_pseudolabel (based on the last iteration)
         if 'node_pseudolabel_indices_A' not in self.graph:
             self.graph.node_pseudolabel_indices_A = torch.zeros_like(self.graph.node_pseudolabel, dtype=bool)
             self.graph.node_pseudolabel_indices_B = torch.zeros_like(self.graph.node_pseudolabel, dtype=bool)
         node_pseudolabel_indices = torch.where(self.graph.node_pseudolabel>=0)[0]
-        # random_indices = torch.randperm(len(node_pseudolabel_indices))
-        # self.graph.node_pseudolabel_indices_A[node_pseudolabel_indices[random_indices[:len(node_pseudolabel_indices)//2]]] = True 
-        # self.graph.label_confidence[self.graph.node_pseudolabel_indices_A] = 1.
-        # self.graph.node_pseudolabel_indices_B[node_pseudolabel_indices[random_indices[len(node_pseudolabel_indices)//2:]]] = True 
-        
+
         self.graph.label_confidence[node_pseudolabel_indices] = 1.
-        self.graph.edge_pseudolabel[node_pseudolabel_indices] = self.graph.y[node_pseudolabel_indices] # 直接给正确标签
         
         node_pseudo_label_acc = torch.mean((self.graph.edge_pseudolabel[node_indices] == self.graph.y[node_indices])*1.)
         edge_pseudo_label_acc = torch.mean((y_hat[edge_indices] == self.graph.y[edge_indices])*1.)
@@ -113,29 +99,7 @@ class Flexmatch:
             print(f'\nAdd no pseudo labels.\n')
         else:
             print(f'\nNumber of new node labels: {torch.sum(node_indices)}; Accuracy of pseudo node labels when selecting: {node_pseudo_label_acc.item()}\n')
-            # print(f'\nNumber of new edge labels: {torch.sum(edge_indices)}; Accuracy of pseudo edge labels when selecting: {edge_pseudo_label_acc.item()}\n')
         
-        
-        # old method
-        # warm_up_flags = self.is_warm_up()
-        # tau_c = torch.zeros(self.graph.num_class)
-        # for i in range(len(tau_c)):
-        #     sigma_c = self.get_sigma_c()
-        #     beta_c = None
-        #     if warm_up_flags[i]:
-        #         # warm up
-        #         beta_c = sigma_c/(max(sigma_c.max(), self.graph.num_nodes-torch.sum(sigma_c)))
-        #     else:
-        #         beta_c = sigma_c/sigma_c.max()
-        #     tau_c[i] = (beta_c*self.tau)[i]
-        
-        # confidence, y_hat = self.prediction.max(dim=1)
-        
-        # unlabeled_index_batch = self.get_batch()
-        # # unlabeled_index = self.graph.pseudolabel == -1
-        # for c in range(self.graph.num_class):
-        #     self.graph.pseudolabel[unlabeled_index_batch*(y_hat==c)*(confidence>tau_c[c])] = c 
-            # print(f'class {c} add {torch.sum(unlabeled_index*(y_hat==c)*(confidence>tau_c[c]))} samples')
         
 
 class UPS:
