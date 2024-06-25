@@ -10,39 +10,10 @@ from tqdm import tqdm
 from utils import enable_dropout, accuracy
 
 class Flexmatch:
-    def __init__(self, graph, prediction, node_threshold, edge_threshold):
+    def __init__(self, graph, prediction, node_threshold):
         self.graph = graph
         self.prediction = prediction
         self.node_threshold = node_threshold 
-        self.edge_threshold = edge_threshold 
-
-
-    # def is_warm_up(self):
-    #     warm_up_flags = torch.zeros(self.graph.num_class)
-    #     criterion = torch.sum(self.graph.pseudolabel==-1)
-    #     for i, _ in enumerate(warm_up_flags):
-    #         warm_up_flags[i] = torch.sum(self.graph.pseudolabel==i) < criterion # 'True' means it needs warm up
-    #     return warm_up_flags 
-
-    # def get_sigma_c(self):
-    #     unlabel_prediction = self.prediction[self.graph.pseudolabel==-1]
-    #     maximum, indices = unlabel_prediction.max(dim=1)
-    #     sigma_c = torch.zeros(self.graph.num_class)
-    #     for i, _ in enumerate(sigma_c):
-    #         sigma_c[i] = torch.sum((indices==i)*(maximum>self.tau))
-    #     return sigma_c
-
-    # def get_batch(self):
-    #     unlabeled_indices = torch.where(self.graph.pseudolabel==-1)[0]
-    #     selected_indices = None
-    #     if len(unlabeled_indices) <= self.batch_size:
-    #         selected_indices = unlabeled_indices
-    #     else:
-    #         shuffled_indices = torch.randperm(len(unlabeled_indices))[:self.batch_size]
-    #         selected_indices = unlabeled_indices[shuffled_indices]
-    #     res = torch.zeros_like(self.graph.pseudolabel)
-    #     res[selected_indices] = 1
-    #     return res==1 # 'True' means selected sample 
     
     def cal_threshold(self, confidence, y_hat, num_class, kernel=lambda x: x):
         beta = torch.zeros(num_class)
@@ -55,10 +26,6 @@ class Flexmatch:
 
     
     def select(self):
-        # print(f'Node_threshold: {self.node_threshold}; Edge_threshold: {self.edge_threshold}')
-        
-        # 
-        # naive, fixed xthreshold
         confidence, y_hat = self.prediction.max(dim=1)
         self.graph.full_confidence = torch.softmax(self.prediction, dim=1).detach()
         
@@ -68,6 +35,7 @@ class Flexmatch:
                 
         print(f'Node_threshold: {node_threshold}')
         self.graph.label_confidence = confidence.detach().clone()
+        self.graph.node_logits = self.prediction.detach().clone()
         self.graph.label_confidence[self.graph.train_index_A] = 1.
         self.graph.edge_pseudolabel = y_hat.detach().clone()
         self.graph.edge_pseudolabel[self.graph.train_index_A] = self.graph.y[self.graph.train_index_A].clone() # edge pseudolabel = y_hat + train_index_A

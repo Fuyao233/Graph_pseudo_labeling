@@ -1,3 +1,5 @@
+# 旨在测试脱离warm_up和伪标签训练流程后的模型效果
+
 import torch
 from torch_geometric.data import Data
 from utils import *
@@ -328,54 +330,7 @@ class Trainer:
         state_dic['node_threshold'] = self.node_threshold # for selecting seed node
         
         return state_dic
-    
-    def warm_up_try(self, n_try, wandb_record):
-        metric_record = []
-        prediction_record = []
-        best_epoch_record = []
-        device = torch.cuda.current_device()
-        graph = self.graph
-        graph.to(device)
-        labels = graph.y
-        
-        for i in range(n_try):
-            model = load_model('mlp', graph, self.args)
-            model.to(device)
-            model.train()
-            optimizer = SGD(model.parameters(), lr=self.lr, weight_decay=self.weight_decay) 
-            criterion = nn.CrossEntropyLoss()
-            
-            best_val_metric = -torch.inf
-            pred_test = None 
-            
-            for epoch in range(200):
-                optimizer.zero_grad()
-                out = model(graph)
-                loss = criterion(out[graph.train_index_A], labels[graph.train_index_A])
-                
-                loss.backward()
-                optimizer.step()
-                
-                metric = cal_accuracy(graph.y[graph.train_index_A], out[graph.train_index_A])
-                _, val_metric = eval(model, graph, 'val', 'accuracy')
-                
-                if val_metric > best_val_metric:
-                    best_epoch = epoch
-                    best_val_metric = val_metric
-                    pred_test = torch.softmax(out, dim=1)
-            
-            metric_record.append(best_val_metric)
-            prediction_record.append(pred_test)    
-            best_epoch_record.append(best_epoch) 
 
-        self.data_save_dic['best_val_metric_list'].append(np.max(metric_record))
-        print(f"MLP best metric: {np.max(metric_record)}")
-        if wandb_record:
-            wandb.log({"MLP_best": {np.max(metric_record)}})
-            
-        Flexmatch(graph, prediction_record[np.argmax(metric_record)], self.node_threshold).select()
-
-        
     def cal_train_metric(self, graph_iter, out):
         metric = None 
         self.metric = 'accuracy' if (self.metric=='accuracy' or self.graph.num_class>2) else 'auc'
@@ -432,6 +387,7 @@ class Trainer:
         edge_acc_list = []
         edge_label_list = []
         state_record_list = [] # record split of graph in each iteration
+        epochs_per_iteration = []
         
         self.data_save_dic = {
             "loss_list": loss_list,
@@ -448,24 +404,14 @@ class Trainer:
             "n_edge_pseudolabel_list": n_edge_pseudolabel_list,
             "edge_acc_list": edge_acc_list,
             "edge_label_list": edge_label_list,
-            "state_record_list": state_record_list
+            "state_record_list": state_record_list,
+            "epochs_per_iteration": epochs_per_iteration
         }
         
         # record the best model between two labels additions
         best_model_iter = None 
         best_val_metric_iter = -torch.inf
         best_test_metric_iter = -torch.inf # corresponding test_metric to best_val_metric
-        
-        # warm_up
-        if self.warm_up:
-            # self.warm_up_try(5, wandb_record)
-            # after warm_up 
-            self.warm_up = False
-            model_iter = load_model(self.model_name, graph_iter, self.args)
-            model_iter.to(torch.cuda.current_device())
-            optimizer = SGD(model_iter.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-            self.stopper.reset()
-        
         
         while torch.sum(self.graph.node_pseudolabel>=0) <= torch.sum(self.graph['unlabeled_index']) and iteration_count<=args.max_iteration:
             if epoch==1:
@@ -517,11 +463,12 @@ class Trainer:
                 wandb.log(dict_to_log)
             
             if self.stopper.early_stop(epoch, val_metric):
-                
+                epochs_per_iteration.append(epoch)
                 iteration_count = iteration_count + 1
 
                 print(f'\nBest val metric:{best_val_metric_iter}')
                 print(f'Best test metric:{best_test_metric_iter}')
+            
                 print(f'Is warm up? {self.warm_up}')
                 
                 # record the global best model
@@ -536,6 +483,7 @@ class Trainer:
                 
                 best_val_metric_list.append(best_val_metric_iter)    
                 best_val_metric_iter = -torch.inf
+                break
                     
                 if len(best_val_metric_list)>1:
                     print(torch.mean(1.*(graph_iter.y[graph_iter.label_confidence>0.4]==graph_iter.edge_pseudolabel[graph_iter.label_confidence>0.4])))
@@ -568,114 +516,20 @@ class Trainer:
             progress_bar.refresh()
             epoch = epoch + 1
         
-        with open(os.path.join(args.save_root, f'{args.dataset}_{repeat_time}.pickle'), 'wb') as file:
+        save_path = f'record/decouple_exp/data/{args.model_name}_s2'
+        os.makedirs(save_path, exist_ok=True)
+        with open(os.path.join(save_path, f'{args.dataset}_{repeat_time}.pickle'), 'wb') as file:
             pickle.dump(self.data_save_dic, file)
         if wandb_record:
             wandb.log({'final': np.max(best_val_metric_list[1:])})
 
         return best_val_metric_list
-    
-    def vote_to_split(self):
-        device = torch.cuda.current_device()
-        # graph = self.training_graph
-        graph = self.graph
-        graph.to(device)
-
-        assert torch.sum(graph.train_index_A) == 0 # 已经在前面随机分割过的话会报错
-        
-        # features = self.training_graph.x[self.training_graph.train_index] 
-        # labels = self.training_graph.y[self.training_graph.train_index] 
-        # initial_indices = torch.where(self.training_graph.train_index==True)
-        hard_vote_record = torch.zeros_like(graph.y)
-        easy_vote_record = torch.zeros_like(graph.y)
-        
-        easy_threshold = 0.85
-        
-        total_voter = 15
-        for i in range(total_voter):
-            print(f'vote: [{i}/{total_voter}]')
-            vote_model = load_model('mlp', self.graph, self.args)
-            vote_model.to(device)
-            vote_model.train()
-            optimizer = SGD(vote_model.parameters(), lr=self.lr, weight_decay=self.weight_decay) 
-            # criterion = FocalLoss()
-            criterion = nn.CrossEntropyLoss()
-            
-            # split
-            train_indices = torch.where(graph.train_index==True)[0]
-            random_train_indices = train_indices[torch.randperm(len(train_indices))]
-            train_indices_vote = random_train_indices[:len(train_indices)//2]
-            test_indices_vote = random_train_indices[len(train_indices)//2:]
-            
-            
-            best_val_metric = -torch.inf
-            best_test_confidence, best_test_pred = None, None
-            
-            for epoch in range(200):
-                
-                optimizer.zero_grad()
-                out = vote_model(graph)
-                loss = criterion(out[train_indices_vote], graph.y[train_indices_vote])
-                
-                loss.backward()
-                optimizer.step()
-                
-                metric = cal_accuracy(graph.y[train_indices_vote], out[train_indices_vote])
-                _, val_metric = eval(vote_model, graph, 'val', 'accuracy')
-                
-                if val_metric > best_val_metric:
-                    best_val_metric = val_metric
-                    pred_test = torch.softmax(out[test_indices_vote], dim=1)
-                    best_test_confidence, best_test_pred = torch.max(pred_test, dim=1)
-            
-            right_indices = graph.y[test_indices_vote]==best_test_pred
-            for c in range(graph.num_class):
-                right_indices_c = torch.logical_and(right_indices, graph.y[test_indices_vote]==c) # len = len(train)
-                indices_c = torch.where(graph.y[test_indices_vote]==c)[0] # max = len(train)
-                
-                _, tmp_indices = torch.topk(best_test_confidence[indices_c], int(len(best_test_confidence[indices_c])*0.8)) # max = len(class c in train)
-                confident_indices = indices_c[tmp_indices] # max = len(train)
-                tmp = torch.zeros_like(right_indices_c)
-                tmp[confident_indices] = True 
-                confident_indices = tmp
-
-                easy_indices = torch.zeros_like(best_test_pred, dtype=bool)
-                hard_indices = torch.zeros_like(best_test_pred, dtype=bool)
-                
-                confident_number = torch.where(confident_indices==True)[0]
-                easy_mask = best_test_pred[confident_number]==c
-                hard_mask = best_test_pred[confident_number]!=c
-                easy_number = confident_number[easy_mask]
-                hard_number = confident_number[hard_mask]
-
-                easy_indices[easy_number] = True 
-                hard_indices[hard_number] = True
-                
-                easy_vote_record[test_indices_vote[easy_indices]] = easy_vote_record[test_indices_vote[easy_indices]] + 1
-                hard_vote_record[test_indices_vote[hard_indices]] = hard_vote_record[test_indices_vote[hard_indices]] + 1
-
-        
-        total_vote = hard_vote_record[graph.train_index] - easy_vote_record[graph.train_index] 
-        bar = total_vote.median()
-        final_easy_indices = torch.where(total_vote<=bar)[0]
-        final_hard_indices = torch.where(total_vote>bar)[0]
-
-        
-        # A-easy, B-hard
-        easy = train_indices[final_easy_indices]
-        hard = train_indices[final_hard_indices]
-        
-        self.graph.train_index_A[hard] = True 
-        self.graph.train_index_A[hard] = True 
-        self.graph.train_index_B[easy] = True 
-        self.graph.train_index_B[easy] = True 
-        
-
+  
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='wisconsin')
-    parser.add_argument('--gpu', type=int, default=4)
+    parser.add_argument('--dataset', type=str, default='cornell')
+    parser.add_argument('--gpu', type=int, default=5)
     parser.add_argument('--save_root', type=str, default='record')
     
     # hyper-parameter
@@ -687,7 +541,7 @@ if __name__ == "__main__":
     parser.add_argument('--autoencoder_weight', type=float, default=0.01)
     # parser.add_argument('--embedding_dim', type=float, default=10)
     # for train
-    parser.add_argument('--warm_up', type=bool, default=True)
+    parser.add_argument('--warm_up', type=bool, default=False)
     parser.add_argument('--upper_bound', type=bool, default=False)
     parser.add_argument('--main_loss_weight', type=int, default=0.7)
     parser.add_argument('--A_B_ratio', type=int, default=0.5)
@@ -707,14 +561,14 @@ if __name__ == "__main__":
     # parser.add_argument('--class_blnc', type=int, default=3)
     # for dataset 
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--train_ratio', type=float, default=0.2)
+    parser.add_argument('--train_ratio', type=float, default=0.6)
     parser.add_argument('--test_ratio', type=float, default=0.2)
     parser.add_argument('--val_ratio', type=float, default=0.2)
-    parser.add_argument('--unlabel_ratio', type=float, default=0.4)
+    parser.add_argument('--unlabel_ratio', type=float, default=0)
     parser.add_argument('--metric', type=str, default='auc')
     parser.add_argument('--dataset_balanced', type=bool, default=False)
     # for model
-    parser.add_argument('--model_name', type=str, default='mlp') # also the embedding dimension of encoder
+    parser.add_argument('--model_name', type=str, default='ourModel') # also the embedding dimension of encoder
     # parser.add_argument('--mask_edge_flag', action='store_true', default=True) # mask the edges         (deprecated)
     parser.add_argument('--hidden_dim', type=int, default=32) # also the embedding dimension of encoder
     parser.add_argument('--num_layers', type=int, default=3)
@@ -729,23 +583,20 @@ if __name__ == "__main__":
     # utils_data_pt = './utils_data/new_model_DE'
     
     args = parser.parse_args()
-    args.basis_flag = True if args.model_name=='ourModel_basis' else False
+    args.basis_flag = False 
     
     seed_all(args.seed)
     dataset = load_dataset(args.dataset)
     
     res_record = []
 
-    args.save_root = os.path.join(args.save_root, args.model_name)
-    os.makedirs(args.save_root, exist_ok=True)
-    
-    for _ in range(5):
+    for _ in range(10):
         split_dataset_balanced(dataset, args)
         graph = preprocessing(dataset)
         
         model = load_model(args.model_name, graph, args)
-        if args.model_name == 'ourModel':
-            model = load_model('mlp', graph, args)
+        # if args.model_name == 'ourModel':
+        #     model = load_model('mlp', graph, args)
         
         print(args.soft_flag)
         trainer = Trainer(graph, model, args=args)

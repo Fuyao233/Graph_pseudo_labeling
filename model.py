@@ -46,15 +46,25 @@ class ourModel(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
     
-    def forward(self,data,auto_encoder_loss_flag=False):
+    def forward(self,data,auto_encoder_loss_flag=True):
         auto_encoder_loss = None
         x = deepcopy(data)
         res = []
-
+        
+        target_confidence = torch.zeros((x.num_nodes, x.num_class)).to(data.x.device)
+        pseudo_target_confidence = torch.zeros((x.num_nodes, x.num_class)).to(data.x.device)
+        target_confidence[torch.arange(x.num_nodes), x.y] = 1.
+        pseudo_target_confidence[x.node_pseudolabel>=0, x.node_pseudolabel[x.node_pseudolabel>=0]] = 1. 
+        
         for n, conv in enumerate(self.convs[:-1]):
             bn = self.bns[n]
             
             layer_node_logits = self.lins[n](x.x)
+            
+            # refine
+            layer_node_logits[x.train_index] = target_confidence[x.train_index]
+            layer_node_logits[x.node_pseudolabel>=0] = pseudo_target_confidence[x.node_pseudolabel>=0]
+            
             conv.set_node_confidence(layer_node_logits)
             res.append(layer_node_logits)
             

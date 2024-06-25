@@ -55,18 +55,21 @@ class myConv(SAGEConv):
     def cal_autoencoder_loss(self, features):
         
         return torch.tensor(0) 
-
-    
+   
     def set_auto_encoder_loss_flag(self):
         self.auto_encoder_loss_flag = True
     
-    def set_node_confidence(self, logits):
-        self.node_confidence = torch.softmax(logits, dim=1) 
+    def set_node_confidence(self, confidence):
+        if confidence[0].sum() != 1.:
+            self.node_confidence = torch.softmax(confidence, dim=1)
+        else:
+            self.node_confidence = confidence
         
     def select_edge(self, inputs, index):
         
         edge_label = self.graph.edge_pseudolabel
-        propogated_confidence_from = self.graph.propogated_confidence_from
+        # 第一轮不设限制，全都可以传
+        propogated_confidence_from = self.graph.propogated_confidence_from if 'propogated_confidence_from' in self.graph else torch.ones((len(index),))
         threshold = self.graph.edge_threshold
         
         select_edge_indicies = propogated_confidence_from>threshold

@@ -292,16 +292,13 @@ def split_dataset_balanced(dataset, args):
         train_indices = torch.logical_or(train_A_indices, train_B_indices).detach()  # for random
         
         # check balancy
-        n1_A = torch.sum(labels[train_indices]==1)
-        n1_B = torch.sum(labels[train_B_indices]==1)
-        n0_A = torch.sum(labels[train_A_indices]==0)
-        n0_B = torch.sum(labels[train_B_indices]==0)
         
         exclude_indices = torch.where((train_indices==False) & (labels>=0))[0]
         rand_indices = torch.randperm(len(exclude_indices))
         val_indices[exclude_indices[rand_indices[:N_val]]] = True 
         test_indices[exclude_indices[rand_indices[N_val:N_val+N_test]]] = True
-        unlabeled_indices[exclude_indices[rand_indices[N_val+N_test:]]] = True
+        if unlabel_ratio != 0:
+            unlabeled_indices[exclude_indices[rand_indices[N_val+N_test:]]] = True
 
         # check ratio
         r_test = torch.sum(test_indices) / N_nodes
@@ -356,13 +353,7 @@ def preprocessing(dataset):
         if key == 'node_feat':
             continue
         data[key] = graph[key]
-    
-    # identify homo and hetero edges
-    # data.y
-    in_node_labels = data.y[data.edge_index[0,:]]
-    out_node_labels = data.y[data.edge_index[1,:]]
-    data.ground_truth_homo_edge_flags = in_node_labels == out_node_labels
-    
+        
     return data
 
 def find_edges(data, node_indices):
